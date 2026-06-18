@@ -1098,6 +1098,12 @@ def p_tarefas():
     d   = get_d()
     cfg = d["config"]
 
+    # Se o usuário clicou em "Abrir →" em algum card, exibe a janela modal
+    # (pop-up) com os detalhes daquela tarefa. Precisa ser chamado logo no
+    # início da página para o decorador @st.dialog funcionar corretamente.
+    if st.session_state.get("_dialog_tarefa_aberta"):
+        _dialog_tarefa(d)
+
     # Blindagem contra duplicação de widgets: rastreia quais tópicos já
     # foram renderizados nesta execução da página. Se por qualquer motivo
     # (bug futuro, dado inconsistente) o mesmo tid aparecer duas vezes na
@@ -1324,9 +1330,11 @@ selecionado.
 def _render_tarefa_card(d: dict, tid: str, mat_nome: str, top_nome: str,
                          aula_ref: str, eh_hoje: bool, key_suffix: str):
     """
-    Renderiza um card de tarefa clicável (expander). Ao expandir, mostra
-    status, timer Pomodoro vinculado ao tópico, registro de questões,
-    criação rápida de flashcard e a referência de aula.
+    Renderiza um card-resumo de tarefa com um botão "Abrir". Ao clicar,
+    abre uma janela modal (pop-up) via @st.dialog com status, timer
+    Pomodoro vinculado ao tópico, registro de questões, criação rápida de
+    flashcard e a referência de aula — tudo sobreposto à página, sem
+    empurrar o restante do layout para baixo (diferente de um expander).
     """
     # Blindagem: a combinação (tid, key_suffix) deve ser única na execução
     # atual da página. Isso normalmente já é garantido por quem chama esta
@@ -1357,138 +1365,196 @@ def _render_tarefa_card(d: dict, tid: str, mat_nome: str, top_nome: str,
     qt_tot       = sum(r.get("total",0)   for r in reg)
     pct_q        = (ac_tot/qt_tot*100) if qt_tot else None
 
-    aula_txt = f"  🎓 {aula_ref}" if aula_ref else ""
-    pct_txt  = f"  •  {pct_q:.0f}% ({ac_tot}/{qt_tot})" if pct_q is not None else ""
-    titulo   = f"{icone} **{top_nome}**  ·  _{mat_nome}_{aula_txt}{pct_txt}"
-
+    aula_txt = f"🎓 {aula_ref}" if aula_ref else ""
+    pct_txt  = f"{pct_q:.0f}% ({ac_tot}/{qt_tot})" if pct_q is not None else ""
     key_base = f"{tid}_{key_suffix}"
 
-    with st.expander(titulo):
-        # ── Status ────────────────────────────────────────────────────────
-        novo_status = st.selectbox(
-            "Status", STATUS_LISTA,
-            index=STATUS_LISTA.index(status_atual) if status_atual in STATUS_LISTA else 0,
-            key=f"status_{key_base}")
-        if novo_status != status_atual:
-            tp_alvo["status"]         = novo_status
-            tp_alvo["ultima_revisao"] = _hoje()
-            if novo_status == "Dominado":
-                tp_alvo["proxima_revisao"] = _add_dias(30)
-            save_d()
-            st.rerun()
+    # ── Card-resumo clicável (substitui o antigo st.expander) ────────────
+    borda = "2px solid #f5a623" if eh_hoje else "1px solid #2d2d4e"
+    st.markdown(
+        f'<div style="background:#0f3460;border:{borda};border-radius:8px;'
+        f'padding:8px 10px;margin:4px 0 2px;font-size:12px;">'
+        f'<strong>{icone} {top_nome}</strong><br>'
+        f'<span style="color:#9e9e9e;font-size:10px;">{mat_nome}</span>'
+        + (f'<br><span style="color:#9e9e9e;font-size:10px;">{aula_txt}</span>' if aula_txt else '')
+        + (f'<br><span style="color:#f5a623;font-size:10px;">{pct_txt}</span>' if pct_txt else '')
+        + '</div>', unsafe_allow_html=True)
 
-        if aula_ref:
-            st.caption(f"🎓 Referência de aula: {aula_ref}")
+    if st.button("Abrir →", key=f"abrir_{key_base}", use_container_width=True):
+        st.session_state["_dialog_tarefa_aberta"] = {
+            "tid": tid, "mid": mid_alvo, "mat_nome": mat_nome,
+            "top_nome": top_nome, "aula_ref": aula_ref,
+            "key_base": key_base,
+        }
+        st.rerun()
 
-        st.markdown("---")
 
-        # ── Timer Pomodoro vinculado ao tópico ───────────────────────────
-        st.markdown("**⏱ Timer Pomodoro**")
-        cfg    = d["config"]
-        tec    = cfg.get("tecnica", "25/5")
-        ms, mp = (25, 5) if "25" in tec else (50, 10)
+@st.dialog("Detalhes da Tarefa", width="large")
+def _dialog_tarefa(d: dict):
+    """
+    Janela modal (pop-up) com o conteúdo completo de uma tarefa: status,
+    timer Pomodoro, registro de questões e criação rápida de flashcard.
+    Substitui o antigo conteúdo do st.expander — agora abre sobreposto à
+    página em vez de empurrar o layout para baixo.
+    """
+    ctx = st.session_state.get("_dialog_tarefa_aberta")
+    if not ctx:
+        st.error("Tarefa não encontrada.")
+        return
 
-        timer_key     = f"timer_ativo_{key_base}"
-        inicio_key    = f"timer_inicio_{key_base}"
+    tid       = ctx["tid"]
+    mid_alvo  = ctx["mid"]
+    mat_nome  = ctx["mat_nome"]
+    top_nome  = ctx["top_nome"]
+    aula_ref  = ctx["aula_ref"]
+    key_base  = ctx["key_base"]
 
-        if timer_key not in st.session_state:
-            st.session_state[timer_key] = False
+    if mid_alvo not in d["materias"] or tid not in d["materias"][mid_alvo].get("topicos", {}):
+        st.error("Este tópico não existe mais (pode ter sido removido).")
+        return
+    tp_alvo = d["materias"][mid_alvo]["topicos"][tid]
 
-        tc1, tc2, tc3 = st.columns(3)
-        with tc1:
-            if not st.session_state[timer_key]:
-                if st.button("▶ Iniciar", key=f"btn_ini_{key_base}", use_container_width=True):
-                    st.session_state[timer_key]  = True
-                    st.session_state[inicio_key] = time.time()
-                    st.rerun()
-            else:
-                if st.button("⏹ Parar e Salvar", key=f"btn_parar_{key_base}",
-                             use_container_width=True, type="primary"):
-                    decorrido = int(time.time() - st.session_state.get(inicio_key, time.time()))
-                    minutos = max(1, decorrido // 60)
-                    d["sessoes"].append({
-                        "data": _hoje(), "duracao_min": minutos,
-                        "materia_id": mid_alvo, "topico_id": tid,
-                        "notas": f"Tarefa: {top_nome}",
-                    })
-                    save_d()
-                    _atualizar_streak()
-                    st.session_state[timer_key] = False
-                    st.success(f"✅ {minutos} min registrados em '{top_nome}'!")
-                    st.rerun()
-        with tc2:
-            if st.session_state[timer_key]:
+    status_atual = tp_alvo.get("status", "Não estudado")
+    reg          = tp_alvo.setdefault("questoes_registro", [])
+    ac_tot       = sum(r.get("acertos",0) for r in reg)
+    qt_tot       = sum(r.get("total",0)   for r in reg)
+    pct_q        = (ac_tot/qt_tot*100) if qt_tot else None
+
+    st.markdown(f"### {top_nome}")
+    st.caption(f"📚 {mat_nome}" + (f"  •  🎓 {aula_ref}" if aula_ref else ""))
+    if pct_q is not None:
+        st.caption(f"📝 Aproveitamento acumulado: {pct_q:.0f}% ({ac_tot}/{qt_tot})")
+
+    st.markdown("---")
+
+    # ── Status ────────────────────────────────────────────────────────
+    novo_status = st.selectbox(
+        "Status", STATUS_LISTA,
+        index=STATUS_LISTA.index(status_atual) if status_atual in STATUS_LISTA else 0,
+        key=f"status_{key_base}")
+    if novo_status != status_atual:
+        tp_alvo["status"]         = novo_status
+        tp_alvo["ultima_revisao"] = _hoje()
+        if novo_status == "Dominado":
+            tp_alvo["proxima_revisao"] = _add_dias(30)
+        save_d()
+        st.rerun()
+
+    st.markdown("---")
+
+    # ── Timer Pomodoro vinculado ao tópico ───────────────────────────
+    st.markdown("**⏱ Timer Pomodoro**")
+    cfg    = d["config"]
+    tec    = cfg.get("tecnica", "25/5")
+    ms, mp = (25, 5) if "25" in tec else (50, 10)
+
+    timer_key  = f"timer_ativo_{key_base}"
+    inicio_key = f"timer_inicio_{key_base}"
+
+    if timer_key not in st.session_state:
+        st.session_state[timer_key] = False
+
+    tc1, tc2, tc3 = st.columns(3)
+    with tc1:
+        if not st.session_state[timer_key]:
+            if st.button("▶ Iniciar", key=f"btn_ini_{key_base}", use_container_width=True):
+                st.session_state[timer_key]  = True
+                st.session_state[inicio_key] = time.time()
+                st.rerun()
+        else:
+            if st.button("⏹ Parar e Salvar", key=f"btn_parar_{key_base}",
+                         use_container_width=True, type="primary"):
                 decorrido = int(time.time() - st.session_state.get(inicio_key, time.time()))
-                st.metric("Tempo decorrido", f"{decorrido//60:02d}:{decorrido%60:02d}")
-            else:
-                st.caption(f"Ciclo sugerido: {ms} min")
-        with tc3:
-            if st.session_state[timer_key]:
-                if st.button("🔄 Atualizar", key=f"btn_refresh_{key_base}",
-                             use_container_width=True):
-                    st.rerun()
-
+                minutos = max(1, decorrido // 60)
+                d["sessoes"].append({
+                    "data": _hoje(), "duracao_min": minutos,
+                    "materia_id": mid_alvo, "topico_id": tid,
+                    "notas": f"Tarefa: {top_nome}",
+                })
+                save_d()
+                _atualizar_streak()
+                st.session_state[timer_key] = False
+                st.success(f"✅ {minutos} min registrados em '{top_nome}'!")
+                st.rerun()
+    with tc2:
         if st.session_state[timer_key]:
-            st.caption("⏳ Timer rodando — clique em 'Atualizar' para ver o "
-                      "tempo avançar, ou 'Parar e Salvar' quando terminar.")
+            decorrido = int(time.time() - st.session_state.get(inicio_key, time.time()))
+            st.metric("Tempo decorrido", f"{decorrido//60:02d}:{decorrido%60:02d}")
+        else:
+            st.caption(f"Ciclo sugerido: {ms} min")
+    with tc3:
+        if st.session_state[timer_key]:
+            if st.button("🔄 Atualizar", key=f"btn_refresh_{key_base}",
+                         use_container_width=True):
+                st.rerun()
 
-        st.markdown("---")
+    if st.session_state[timer_key]:
+        st.caption("⏳ Timer rodando — clique em 'Atualizar' para ver o "
+                  "tempo avançar, ou 'Parar e Salvar' quando terminar.")
 
-        # ── Registro de desempenho em questões ───────────────────────────
-        st.markdown("**📝 Registro de Questões**")
-        with st.form(f"form_questoes_{key_base}", clear_on_submit=True):
-            qc1, qc2 = st.columns(2)
-            with qc1: novos_acertos = st.number_input("Acertos", 0, 999, 0,
-                                                       key=f"ac_{key_base}")
-            with qc2: novo_total    = st.number_input("Total de questões", 0, 999, 0,
-                                                       key=f"tt_{key_base}")
-            if st.form_submit_button("💾 Registrar Desempenho"):
-                if novo_total > 0 and novos_acertos <= novo_total:
-                    reg.append({
-                        "data": _hoje(), "acertos": int(novos_acertos),
-                        "total": int(novo_total),
-                    })
-                    save_d()
-                    st.success(f"✅ {novos_acertos}/{novo_total} registrado!")
-                    st.rerun()
-                elif novo_total == 0:
-                    st.warning("Informe o total de questões resolvidas.")
-                else:
-                    st.warning("Acertos não pode ser maior que o total.")
+    st.markdown("---")
 
-        if reg:
-            resumo = (f"Histórico: {len(reg)} registro(s)  •  "
-                     f"Acumulado: {ac_tot}/{qt_tot} ({pct_q:.0f}%)"
-                     if qt_tot else f"Histórico: {len(reg)} registro(s)")
-            st.caption(resumo)
-            for r in reversed(reg[-5:]):
-                st.caption(f"  {r['data']} — {r['acertos']}/{r['total']}")
+    # ── Registro de desempenho em questões ───────────────────────────
+    st.markdown("**📝 Registro de Questões**")
+    with st.form(f"form_questoes_{key_base}", clear_on_submit=True):
+        qc1, qc2 = st.columns(2)
+        with qc1: novos_acertos = st.number_input("Acertos", 0, 999, 0,
+                                                   key=f"ac_{key_base}")
+        with qc2: novo_total    = st.number_input("Total de questões", 0, 999, 0,
+                                                   key=f"tt_{key_base}")
+        if st.form_submit_button("💾 Registrar Desempenho"):
+            if novo_total > 0 and novos_acertos <= novo_total:
+                reg.append({
+                    "data": _hoje(), "acertos": int(novos_acertos),
+                    "total": int(novo_total),
+                })
+                save_d()
+                st.success(f"✅ {novos_acertos}/{novo_total} registrado!")
+                st.rerun()
+            elif novo_total == 0:
+                st.warning("Informe o total de questões resolvidas.")
+            else:
+                st.warning("Acertos não pode ser maior que o total.")
 
-        st.markdown("---")
+    if reg:
+        resumo = (f"Histórico: {len(reg)} registro(s)  •  "
+                 f"Acumulado: {ac_tot}/{qt_tot} ({pct_q:.0f}%)"
+                 if qt_tot else f"Histórico: {len(reg)} registro(s)")
+        st.caption(resumo)
+        for r in reversed(reg[-5:]):
+            st.caption(f"  {r['data']} — {r['acertos']}/{r['total']}")
 
-        # ── Criar flashcard rápido a partir do tópico ────────────────────
-        st.markdown("**🃏 Criar Flashcard a partir deste tópico**")
-        with st.form(f"form_fc_rapido_{key_base}", clear_on_submit=True):
-            fc_frente = st.text_input("Frente (pergunta)",
-                                       placeholder=f"ex: O que é {top_nome}?",
-                                       key=f"fcf_{key_base}")
-            fc_verso  = st.text_area("Verso (resposta)", height=80,
-                                      key=f"fcv_{key_base}")
-            if st.form_submit_button("🃏 Criar Flashcard"):
-                if fc_frente.strip() and fc_verso.strip():
-                    fid = _novo_id("FC", d["flashcards"])
-                    d["flashcards"][fid] = {
-                        "frente": fc_frente.strip(), "verso": fc_verso.strip(),
-                        "materia_id": mid_alvo,
-                        "proxima_revisao": _hoje(), "intervalo_idx": 0,
-                        "total_revisoes": 0, "facilidade_media": 3.0,
-                        "criado_em": _hoje(),
-                    }
-                    save_d()
-                    st.success("✅ Flashcard criado! Veja em 'Flashcards'.")
-                    st.rerun()
-                else:
-                    st.warning("Preencha frente e verso para criar o flashcard.")
+    st.markdown("---")
+
+    # ── Criar flashcard rápido a partir do tópico ────────────────────
+    st.markdown("**🃏 Criar Flashcard a partir deste tópico**")
+    with st.form(f"form_fc_rapido_{key_base}", clear_on_submit=True):
+        fc_frente = st.text_input("Frente (pergunta)",
+                                   placeholder=f"ex: O que é {top_nome}?",
+                                   key=f"fcf_{key_base}")
+        fc_verso  = st.text_area("Verso (resposta)", height=80,
+                                  key=f"fcv_{key_base}")
+        if st.form_submit_button("🃏 Criar Flashcard"):
+            if fc_frente.strip() and fc_verso.strip():
+                fid = _novo_id("FC", d["flashcards"])
+                d["flashcards"][fid] = {
+                    "frente": fc_frente.strip(), "verso": fc_verso.strip(),
+                    "materia_id": mid_alvo,
+                    "proxima_revisao": _hoje(), "intervalo_idx": 0,
+                    "total_revisoes": 0, "facilidade_media": 3.0,
+                    "criado_em": _hoje(),
+                }
+                save_d()
+                st.success("✅ Flashcard criado! Veja em 'Flashcards'.")
+                st.rerun()
+            else:
+                st.warning("Preencha frente e verso para criar o flashcard.")
+
+    st.markdown("---")
+    if st.button("✖ Fechar", use_container_width=True):
+        st.session_state["_dialog_tarefa_aberta"] = None
+        st.rerun()
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════
