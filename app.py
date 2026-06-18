@@ -1098,6 +1098,13 @@ def p_tarefas():
     d   = get_d()
     cfg = d["config"]
 
+    # Blindagem contra duplicação de widgets: rastreia quais tópicos já
+    # foram renderizados nesta execução da página. Se por qualquer motivo
+    # (bug futuro, dado inconsistente) o mesmo tid aparecer duas vezes na
+    # mesma seção, a segunda ocorrência é ignorada silenciosamente em vez
+    # de quebrar a página com StreamlitDuplicateElementKey.
+    st.session_state["_tids_renderizados_tarefas"] = set()
+
     st.markdown('<p class="page-title">✅ Tarefas</p>', unsafe_allow_html=True)
     st.markdown(
         '<p class="page-sub">Planejamento, tempo de estudo e desempenho em '
@@ -1321,6 +1328,18 @@ def _render_tarefa_card(d: dict, tid: str, mat_nome: str, top_nome: str,
     status, timer Pomodoro vinculado ao tópico, registro de questões,
     criação rápida de flashcard e a referência de aula.
     """
+    # Blindagem: a combinação (tid, key_suffix) deve ser única na execução
+    # atual da página. Isso normalmente já é garantido por quem chama esta
+    # função (plano semanal nunca repete tid; revisões usa suffix fixo
+    # "revisao", que não colide com "d0".."d6") — mas a checagem aqui evita
+    # qualquer StreamlitDuplicateElementKey mesmo se um cenário futuro não
+    # previsto reintroduzir uma repetição.
+    chave_unica = f"{tid}_{key_suffix}"
+    vistos = st.session_state.setdefault("_tids_renderizados_tarefas", set())
+    if chave_unica in vistos:
+        return
+    vistos.add(chave_unica)
+
     mid_alvo, tp_alvo = None, None
     for mid, m in d["materias"].items():
         if tid in m.get("topicos", {}):
