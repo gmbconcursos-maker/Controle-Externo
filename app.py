@@ -31,7 +31,7 @@ PUBLICAR NA NUVEM (gratuito):
 """
 
 import streamlit as st
-import json, os, datetime, random, math
+import json, os, datetime, random, math, time
 from pathlib import Path
 
 # ── Supabase é OPCIONAL — se não configurado, cai para JSON local ──────────
@@ -458,6 +458,7 @@ def _carregar_demo():
                 "status": "Não estudado",
                 "ultima_revisao": None, "proxima_revisao": None,
                 "intervalo_idx": 0, "total_revisoes": 0,
+                "aula_ref": "",
                 "criado_em": _hoje(),
             }
     for mid_ref, frente, verso in _FC_DEMO:
@@ -561,8 +562,7 @@ def _sidebar():
         pagina = st.radio(
             "Navegar",
             ["🏠 Dashboard", "📚 Matérias e Tópicos",
-             "🃏 Flashcards", "📅 Planejamento",
-             "⏱ Sessões", "📝 Questões",
+             "🃏 Flashcards", "✅ Tarefas", "📈 Análise",
              "✍ Feynman", "💾 Exportar"],
             label_visibility="collapsed",
         )
@@ -768,9 +768,12 @@ def p_materias():
                 st.caption("Nenhum tópico ainda.")
             else:
                 for tid, tp in tops.items():
-                    t_col1, t_col2, t_col3, t_col4 = st.columns([4, 2, 2, 2])
+                    t_col1, t_col2, t_col3, t_col4 = st.columns([3, 2, 2, 2])
                     with t_col1:
-                        st.markdown(tp["nome"])
+                        st.markdown(f"**{tp['nome']}**")
+                        aula_atual = tp.get("aula_ref", "")
+                        if aula_atual:
+                            st.caption(f"🎓 {aula_atual}")
                     with t_col2:
                         st.markdown(_status_badge(tp.get("status","Não estudado")),
                                     unsafe_allow_html=True)
@@ -791,6 +794,25 @@ def p_materias():
                         dif = tp.get("dificuldade",3)
                         st.caption(f"Dif: {'★'*dif}  Prio: {tp.get('prioridade',3)}")
 
+                    # Campo editável de referência de aula/material
+                    with st.form(f"form_aula_{mid}_{tid}", clear_on_submit=False):
+                        ca1, ca2 = st.columns([5,1])
+                        with ca1:
+                            nova_aula = st.text_input(
+                                "Aula/material de referência (ex: Aula 09 — Pontuação)",
+                                value=tp.get("aula_ref",""),
+                                key=f"in_aula_{mid}_{tid}",
+                                placeholder="ex: Aula 12 — Estratégia Concursos")
+                        with ca2:
+                            st.markdown("<br>", unsafe_allow_html=True)
+                            if st.form_submit_button("💾"):
+                                tp["aula_ref"] = nova_aula.strip()
+                                save_d()
+                                st.rerun()
+                    st.markdown(
+                        '<hr style="margin:4px 0;border-color:#2d2d4e;">',
+                        unsafe_allow_html=True)
+
             # ── Novo tópico ───────────────────────────────────────────────
             st.divider()
             with st.form(f"form_top_{mid}", clear_on_submit=True):
@@ -801,6 +823,10 @@ def p_materias():
                                                       key=f"nt_dif_{mid}")
                 with nt_col3: prio_t = st.selectbox("Prio.", [5,4,3,2,1], index=2,
                                                       key=f"nt_prio_{mid}")
+                aula_t = st.text_input(
+                    "Aula/material de referência (opcional)",
+                    key=f"nt_aula_{mid}",
+                    placeholder="ex: Aula 09 — Pontuação (Estratégia Concursos)")
                 if st.form_submit_button("Adicionar Tópico"):
                     if nome_t.strip():
                         tid = _novo_id("T", tops)
@@ -809,6 +835,7 @@ def p_materias():
                             "prioridade": prio_t, "status": "Não estudado",
                             "ultima_revisao": None, "proxima_revisao": None,
                             "intervalo_idx": 0, "total_revisoes": 0,
+                            "aula_ref": aula_t.strip(),
                             "criado_em": _hoje(),
                         }
                         save_d()
@@ -997,15 +1024,81 @@ def p_flashcards():
 #  PÁGINA: PLANEJAMENTO
 # ═══════════════════════════════════════════════════════════════════════════
 
-def p_planejamento():
+_DIAS_SEMANA = ["Segunda-feira","Terça-feira","Quarta-feira","Quinta-feira",
+                "Sexta-feira","Sábado","Domingo"]
+
+def _candidatos_pendentes(d: dict) -> list:
+    """
+    Lista de tópicos não dominados, ordenada por peso (prioridade × dificuldade)
+    do maior para o menor — é a aplicação prática do Pareto: tópicos mais
+    importantes e mais difíceis sobem para o topo da fila.
+
+    Cada item: (peso, nome_materia, nome_topico, topico_id, aula_ref)
+    """
+    candidatos = []
+    for mid, m in d["materias"].items():
+        for tid, tp in m.get("topicos", {}).items():
+            if tp.get("status") != "Dominado":
+                peso = tp.get("prioridade", 3) * tp.get("dificuldade", 3)
+                candidatos.append((peso, m["nome"], tp["nome"], tid,
+                                   tp.get("aula_ref", "")))
+    candidatos.sort(reverse=True)
+    return candidatos
+
+def _distribuir_pela_semana(candidatos: list, dia_atual_idx: int,
+                             modo: str) -> dict:
+    """
+    Distribui os tópicos pendentes pelos dias da semana.
+
+    modo "restante": só preenche de hoje até domingo (dias passados ficam
+        vazios/cinza) — útil para quem abre o app no meio da semana e quer
+        saber "o que ainda falta esta semana", sem reabrir o que já passou.
+
+    modo "completa": preenche todos os 7 dias, como antes (útil para
+        visualizar/planejar a semana inteira de uma vez, ex.: domingo
+        à noite planejando a semana toda).
+    """
+    plano = {i: [] for i in range(7)}
+    if not candidatos:
+        return plano
+
+    if modo == "restante":
+        dias_uteis = list(range(dia_atual_idx, 7))
+    else:
+        dias_uteis = list(range(7))
+
+    n_dias = len(dias_uteis) or 1
+    por_d  = max(1, len(candidatos) // n_dias)
+
+    for i, dia_idx in enumerate(dias_uteis):
+        sl = candidatos[i*por_d:(i+1)*por_d]
+        if not sl and candidatos:
+            sl = candidatos[:1]
+        plano[dia_idx] = sl
+
+    return plano
+
+def p_tarefas():
+    """
+    Página unificada de Planejamento + Sessões + Questões.
+
+    Cada tópico pendente do plano semanal se torna uma "tarefa" clicável.
+    Ao expandir, o usuário tem acesso a: status, timer Pomodoro vinculado
+    ao tópico, registro de desempenho em questões (acertos/total), criação
+    rápida de flashcard e referência de aula — tudo em um único lugar, sem
+    precisar trocar de aba no meio do estudo.
+    """
     d   = get_d()
     cfg = d["config"]
 
-    st.markdown('<p class="page-title">📅 Planejamento de Estudos</p>',
-                unsafe_allow_html=True)
+    st.markdown('<p class="page-title">✅ Tarefas</p>', unsafe_allow_html=True)
+    st.markdown(
+        '<p class="page-sub">Planejamento, tempo de estudo e desempenho em '
+        'questões — tudo em um único lugar, por tópico.</p>',
+        unsafe_allow_html=True)
 
-    # Configurações
-    with st.expander("⚙ Configurações", expanded=True):
+    # ── Configurações ────────────────────────────────────────────────────
+    with st.expander("⚙ Configurações"):
         with st.form("form_cfg"):
             c1,c2,c3,c4 = st.columns(4)
             with c1: hpd  = st.number_input("Horas/dia", 1, 12,
@@ -1026,50 +1119,144 @@ def p_planejamento():
                 st.success("✅ Configurações salvas!")
                 st.rerun()
 
+    # ── Quadro explicativo do critério de geração ───────────────────────────
+    with st.expander("❓ Como esse plano é gerado? (clique para entender o critério)"):
+        st.markdown(
+            "O plano não é aleatório — ele segue uma lógica de "
+            "**priorização objetiva**, recalculada toda vez que você abre "
+            "esta página. Veja as 3 etapas:")
+        ec1, ec2, ec3 = st.columns(3)
+        with ec1:
+            st.markdown("""
+**① Filtragem**
+
+Tópicos marcados como **"Dominado"** são excluídos do plano.
+
+Só entram na fila os tópicos com status:
+- Não estudado
+- Em andamento
+- Revisar
+""")
+        with ec2:
+            st.markdown("""
+**② Cálculo do peso**
+
+Para cada tópico restante:
+
+`peso = prioridade × dificuldade`
+
+Exemplo: prioridade 5 e dificuldade 4
+→ peso 20 (mais urgente)
+
+Exemplo: prioridade 3 e dificuldade 2
+→ peso 6 (menos urgente)
+""")
+        with ec3:
+            st.markdown("""
+**③ Ordenação e distribuição**
+
+A fila é ordenada do **maior peso para o menor**
+(lógica de Pareto: o que é mais importante e
+mais difícil aparece primeiro).
+
+Depois é dividida nos dias da semana — ou só nos
+dias restantes, se o modo "Só o que resta" estiver
+selecionado.
+""")
+        st.caption(
+            "🔄 **Atualização:** o plano é recalculado a cada vez que você "
+            "visita esta página — não é fixo por semana. Se você marcar um "
+            "tópico como 'Dominado' ou mudar sua prioridade/dificuldade, a "
+            "posição dele na fila muda imediatamente, sem esperar a virada "
+            "da semana.")
+        st.caption(
+            "🎓 **Referência de aula/material:** em 'Matérias e Tópicos', cada "
+            "tópico tem um campo onde você anota a aula do seu curso (ex: "
+            "'Aula 09 — Pontuação'). Uma vez preenchido, essa referência "
+            "aparece nos cards de tarefa abaixo.")
+        st.caption(
+            "✅ **Clique em qualquer tarefa abaixo** para expandir e acessar "
+            "timer Pomodoro, registro de questões e criação de flashcard — "
+            "tudo vinculado àquele tópico específico.")
+
     st.divider()
 
-    # Plano semanal
+    # ── Parâmetros de exibição do plano ─────────────────────────────────────
     ms, mp = (25, 5) if "25" in cfg.get("tecnica","25/5") else (50, 10)
     hpd    = cfg.get("horas_por_dia", 4)
     ciclos = max(1, int(hpd * 60 / (ms + mp)))
 
-    candidatos = []
-    for mid, m in d["materias"].items():
-        for tid, tp in m.get("topicos",{}).items():
-            if tp.get("status") != "Dominado":
-                peso = tp.get("prioridade",3) * tp.get("dificuldade",3)
-                candidatos.append((peso, m["nome"], tp["nome"]))
-    candidatos.sort(reverse=True)
+    hj            = datetime.date.today()
+    dia_atual_idx = hj.weekday()  # 0 = Segunda ... 6 = Domingo
 
-    dias  = ["Segunda-feira","Terça-feira","Quarta-feira","Quinta-feira",
-              "Sexta-feira","Sábado","Domingo"]
-    por_d = max(1, len(candidatos)//7) if candidatos else 1
+    candidatos = _candidatos_pendentes(d)
 
-    st.subheader("📅 Plano da Semana — gerado automaticamente")
-    st.caption(f"Baseado em Pareto: tópicos ordenados por prioridade × dificuldade  |  "
-               f"{ciclos} ciclos Pomodoro ({ms}'+{mp}') por dia  =  {ciclos*ms} min de estudo")
+    col_tit, col_modo = st.columns([3,2])
+    with col_tit:
+        st.subheader("📅 Tarefas da Semana")
+        st.caption(f"Hoje é **{_DIAS_SEMANA[dia_atual_idx]}**  •  "
+                   f"Baseado em Pareto (prioridade × dificuldade)  •  "
+                   f"{ciclos} ciclos Pomodoro ({ms}'+{mp}') por dia")
+    with col_modo:
+        modo_label = st.radio(
+            "Modo de visualização",
+            ["Só o que resta esta semana", "Semana completa (Seg–Dom)"],
+            index=0,
+            label_visibility="collapsed",
+        )
+        modo = "restante" if "resta" in modo_label else "completa"
 
     if not candidatos:
         st.info("Nenhum tópico pendente! Você dominou tudo ou não cadastrou tópicos ainda.")
-        return
+    else:
+        plano = _distribuir_pela_semana(candidatos, dia_atual_idx, modo)
 
-    cols_dias = st.columns(7)
-    for i, (dia, col) in enumerate(zip(dias, cols_dias)):
-        sl = candidatos[i*por_d:(i+1)*por_d]
-        if not sl: sl = candidatos[:1]
-        with col:
-            st.markdown(f"**{dia[:3]}**")
-            for _, mat, top in sl:
-                st.markdown(
-                    f'<div style="background:#0f3460;border-radius:8px;'
-                    f'padding:8px;margin:4px 0;font-size:12px;">'
-                    f'<strong>{top[:30]}</strong><br>'
-                    f'<span style="color:#9e9e9e;font-size:10px;">{mat[:20]}</span>'
-                    f'</div>',
-                    unsafe_allow_html=True)
-            st.caption(f"⏱ {ciclos}x{ms}'")
+        # ── Renderização dos 7 dias, cada tópico é um expander clicável ─────
+        cols_dias = st.columns(7)
+        for i, (dia, col) in enumerate(zip(_DIAS_SEMANA, cols_dias)):
+            with col:
+                eh_hoje    = (i == dia_atual_idx)
+                eh_passado = (modo == "restante") and (i < dia_atual_idx)
 
-    # Revisões pendentes hoje
+                if eh_hoje:
+                    st.markdown(
+                        '<div style="background:#e94560;border-radius:6px;'
+                        'padding:4px 6px;text-align:center;font-size:11px;'
+                        'font-weight:700;color:white;margin-bottom:4px;">'
+                        '🔥 HOJE</div>', unsafe_allow_html=True)
+                st.markdown(f"**{dia[:3]}**")
+
+                if eh_passado:
+                    st.markdown(
+                        '<div style="color:#5a5a6e;font-size:11px;'
+                        'padding:8px 0;">— dia já passou —</div>',
+                        unsafe_allow_html=True)
+                    continue
+
+                sl = plano.get(i, [])
+                if not sl:
+                    st.caption("Livre / revisão")
+                    continue
+
+                for _, mat, top, tid, aula_ref in sl:
+                    _render_tarefa_card(d, tid, mat, top, aula_ref, eh_hoje,
+                                        key_suffix=f"d{i}")
+                st.caption(f"⏱ {ciclos}x{ms}'")
+
+        st.divider()
+        if modo == "restante":
+            st.caption(
+                "💡 Modo 'restante': os tópicos já se redistribuem "
+                "automaticamente entre hoje e domingo. Dias passados não "
+                "são reabertos — o que não foi estudado neles entra na "
+                "redistribuição dos dias seguintes na próxima vez que você "
+                "abrir esta página.")
+        else:
+            st.caption(
+                "💡 Modo 'completa': mostra a semana inteira de Segunda a "
+                "Domingo, útil para planejar com antecedência.")
+
+    # ── Revisões pendentes hoje (spaced repetition de tópico) ──────────────
     st.divider()
     st.subheader("🔁 Revisões Pendentes Hoje")
     pendentes = []
@@ -1077,282 +1264,501 @@ def p_planejamento():
         for tid, tp in m.get("topicos",{}).items():
             prox = tp.get("proxima_revisao")
             if prox and _dias_ate(prox) <= 0:
-                pendentes.append((m["nome"], tp["nome"]))
+                pendentes.append((m["nome"], tp["nome"], tid, tp.get("aula_ref","")))
     if pendentes:
-        for mat, top in pendentes:
-            st.markdown(f"- **{top}** — _{mat}_")
+        for mat, top, tid, aula_ref in pendentes:
+            _render_tarefa_card(d, tid, mat, top, aula_ref, eh_hoje=False,
+                                key_suffix="revisao")
     else:
         st.success("✅ Nenhuma revisão de tópico pendente para hoje!")
 
-# ═══════════════════════════════════════════════════════════════════════════
-#  PÁGINA: SESSÕES
-# ═══════════════════════════════════════════════════════════════════════════
-
-def p_sessoes():
-    d    = get_d()
-    sess = d["sessoes"]
-    mats = d["materias"]
-    cfg  = d["config"]
-
-    st.markdown('<p class="page-title">⏱ Sessões de Estudo</p>',
-                unsafe_allow_html=True)
-
-    # Timer Pomodoro simples (contagem regressiva via JS)
-    tec    = cfg.get("tecnica","25/5")
-    ms, mp = (25,5) if "25" in tec else (50,10)
-
-    st.subheader("⏱ Timer Pomodoro")
-    st.markdown(
-        f"""
-        <div style="background:#0f3460;border-radius:12px;padding:20px;text-align:center;">
-            <div id="timer" style="font-size:64px;font-weight:700;
-                color:#f5a623;font-family:monospace;">{ms:02d}:00</div>
-            <div style="color:#9e9e9e;margin:8px 0;">
-                Estudo: {ms} min  |  Pausa: {mp} min
-            </div>
-            <button onclick="iniciar()" id="btn_ini"
-                style="background:#2ecc71;color:white;border:none;
-                       border-radius:8px;padding:10px 24px;
-                       font-size:16px;font-weight:600;
-                       margin:6px;cursor:pointer;">▶ Iniciar</button>
-            <button onclick="pausar()"
-                style="background:#f5a623;color:white;border:none;
-                       border-radius:8px;padding:10px 24px;
-                       font-size:16px;font-weight:600;
-                       margin:6px;cursor:pointer;">⏸ Pausar</button>
-            <button onclick="parar()"
-                style="background:#e74c3c;color:white;border:none;
-                       border-radius:8px;padding:10px 24px;
-                       font-size:16px;font-weight:600;
-                       margin:6px;cursor:pointer;">⏹ Parar</button>
-        </div>
-        <script>
-        var _total = {ms}*60;
-        var _rest  = _total;
-        var _ativo = false;
-        var _pausa = false;
-        var _timer = null;
-
-        function fmt(s){{
-            var m=Math.floor(s/60), sec=s%60;
-            return (m<10?'0':'')+m+':'+(sec<10?'0':'')+sec;
-        }}
-
-        function iniciar(){{
-            if(_ativo) return;
-            _ativo=true; _pausa=false;
-            _timer=setInterval(function(){{
-                if(!_pausa){{
-                    _rest--;
-                    document.getElementById('timer').innerText=fmt(_rest);
-                    if(_rest<=0){{
-                        clearInterval(_timer);
-                        _ativo=false;
-                        document.getElementById('timer').innerText='00:00';
-                        document.getElementById('timer').style.color='#2ecc71';
-                        alert('✅ Sessão de {ms} min concluída! Registre sua sessão abaixo.');
-                    }}
-                }}
-            }},1000);
-        }}
-
-        function pausar(){{
-            _pausa=!_pausa;
-        }}
-
-        function parar(){{
-            clearInterval(_timer);
-            _ativo=false; _pausa=false;
-            _rest={ms}*60;
-            document.getElementById('timer').innerText='{ms:02d}:00';
-            document.getElementById('timer').style.color='#f5a623';
-        }}
-        </script>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Registrar sessão manual
+    # ── Métricas gerais de tempo estudado ────────────────────────────────────
     st.divider()
-    st.subheader("📝 Registrar Sessão")
-    with st.form("form_sessao", clear_on_submit=True):
-        opts = {m["nome"]: mid for mid, m in mats.items()}
-        c1,c2,c3 = st.columns([3,1,3])
-        with c1: mat_sel = st.selectbox("Matéria", ["Geral"]+list(opts.keys()))
-        with c2: dur     = st.number_input("Minutos", 5, 300, ms)
-        with c3: nota_s  = st.text_input("Notas (opcional)")
-        if st.form_submit_button("✅ Registrar", type="primary"):
-            mid = opts.get(mat_sel, "")
-            sess.append({
-                "data": _hoje(), "duracao_min": int(dur),
-                "materia_id": mid, "notas": nota_s,
-            })
-            save_d()
-            _atualizar_streak()
-            st.success(f"✅ Sessão de {dur} min registrada!")
-            st.rerun()
-
-    # KPIs
-    st.divider()
+    st.subheader("📊 Resumo de Tempo Estudado")
+    sess      = d["sessoes"]
     total_min = sum(s["duracao_min"] for s in sess)
-    hj        = datetime.date.today()
     ini_s     = hj - datetime.timedelta(days=hj.weekday())
-    min_s     = sum(s["duracao_min"] for s in sess
-                    if s["data"] >= ini_s.isoformat())
+    min_s     = sum(s["duracao_min"] for s in sess if s["data"] >= ini_s.isoformat())
     min_hj    = sum(s["duracao_min"] for s in sess if s["data"] == _hoje())
 
     c1,c2,c3,c4 = st.columns(4)
-    c1.metric("Total geral",     f"{total_min//60}h{total_min%60:02d}m")
-    c2.metric("Esta semana",     f"{min_s//60}h{min_s%60:02d}m")
-    c3.metric("Hoje",            f"{min_hj//60}h{min_hj%60:02d}m")
-    c4.metric("Sessões totais",  str(len(sess)))
+    c1.metric("Total geral",    f"{total_min//60}h{total_min%60:02d}m")
+    c2.metric("Esta semana",    f"{min_s//60}h{min_s%60:02d}m")
+    c3.metric("Hoje",           f"{min_hj//60}h{min_hj%60:02d}m")
+    c4.metric("Sessões registradas", str(len(sess)))
 
-    # Histórico
-    st.divider()
-    st.subheader("📋 Últimas 20 Sessões")
-    for s in sorted(sess, key=lambda x: x["data"], reverse=True)[:20]:
-        mat = mats.get(s.get("materia_id",""),{}).get("nome","Geral")
-        st.markdown(
-            f'<div style="background:#0f3460;border-radius:8px;'
-            f'padding:10px 14px;margin:4px 0;font-size:13px;">'
-            f'<strong>{s["data"]}</strong>  ·  {mat}  ·  '
-            f'<span style="color:#f5a623;">{s["duracao_min"]} min</span>'
-            f'{("  ·  " + s["notas"][:50]) if s.get("notas") else ""}'
-            f'</div>',
-            unsafe_allow_html=True)
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  PÁGINA: BANCO DE QUESTÕES
-# ═══════════════════════════════════════════════════════════════════════════
-
-def p_questoes():
-    d    = get_d()
-    qs   = d["questoes"]
-    mats = d["materias"]
-
-    st.markdown('<p class="page-title">📝 Banco de Questões</p>',
-                unsafe_allow_html=True)
-
-    tab_sim, tab_add, tab_lista = st.tabs(
-        ["▶ Simulado", "➕ Adicionar Questão", "📋 Listar Questões"])
-
-    # ── Simulado ──────────────────────────────────────────────────────────
-    with tab_sim:
-        if not qs:
-            st.info("Adicione questões primeiro.")
-        else:
-            qtd = st.slider("Quantidade de questões", 1,
-                             min(20, len(qs)), min(5, len(qs)))
-            if st.button("▶ Iniciar Simulado", type="primary"):
-                sel = random.sample(list(qs.items()), qtd)
-                st.session_state["simulado_fila"]  = sel
-                st.session_state["simulado_idx"]   = 0
-                st.session_state["simulado_acert"] = 0
+    with st.expander("➕ Registrar tempo manualmente (sem vincular a um tópico)"):
+        with st.form("form_sessao_manual", clear_on_submit=True):
+            mats = d["materias"]
+            opts = {m["nome"]: mid for mid, m in mats.items()}
+            cc1,cc2,cc3 = st.columns([3,1,3])
+            with cc1: mat_sel = st.selectbox("Matéria", ["Geral"]+list(opts.keys()))
+            with cc2: dur     = st.number_input("Minutos", 5, 300, ms)
+            with cc3: nota_s  = st.text_input("Notas (opcional)")
+            if st.form_submit_button("✅ Registrar"):
+                sess.append({
+                    "data": _hoje(), "duracao_min": int(dur),
+                    "materia_id": opts.get(mat_sel, ""), "topico_id": "",
+                    "notas": nota_s,
+                })
+                save_d()
+                _atualizar_streak()
+                st.success(f"✅ {dur} min registrados!")
                 st.rerun()
 
-            fila  = st.session_state.get("simulado_fila", [])
-            s_idx = st.session_state.get("simulado_idx", 0)
 
-            if fila and s_idx < len(fila):
-                qid, q = fila[s_idx]
-                mat = mats.get(q.get("materia_id",""),{}).get("nome","?")
-                total_q = len(fila)
-                st.progress(s_idx / total_q)
-                st.markdown(f"**Questão {s_idx+1}/{total_q}** — {mat} | {q.get('banca','')}")
-                st.markdown(
-                    f'<div style="background:#0f3460;border-radius:10px;'
-                    f'padding:16px;margin:8px 0;">{q["enunciado"]}</div>',
-                    unsafe_allow_html=True)
-                resp = st.radio(
-                    "Escolha a alternativa:",
-                    [f"({l}) {t}" for l, t in q["alternativas"].items()],
-                    key=f"sim_resp_{qid}_{s_idx}",
-                    index=None)
-                if resp and st.button("Confirmar Resposta",
-                                       key=f"sim_conf_{s_idx}"):
-                    letra = resp[1]
-                    q["tentativas"] = q.get("tentativas",0) + 1
-                    if letra == q["gabarito"]:
-                        q["acertos"] = q.get("acertos",0) + 1
-                        st.session_state["simulado_acert"] += 1
-                        st.success("✅ Correto!")
-                    else:
-                        st.error(f"❌ Errado. Gabarito: **{q['gabarito']}**")
+def _render_tarefa_card(d: dict, tid: str, mat_nome: str, top_nome: str,
+                         aula_ref: str, eh_hoje: bool, key_suffix: str):
+    """
+    Renderiza um card de tarefa clicável (expander). Ao expandir, mostra
+    status, timer Pomodoro vinculado ao tópico, registro de questões,
+    criação rápida de flashcard e a referência de aula.
+    """
+    mid_alvo, tp_alvo = None, None
+    for mid, m in d["materias"].items():
+        if tid in m.get("topicos", {}):
+            mid_alvo = mid
+            tp_alvo  = m["topicos"][tid]
+            break
+    if tp_alvo is None:
+        st.caption(f"⚠ Tópico '{top_nome}' não encontrado (pode ter sido removido).")
+        return
+
+    status_atual = tp_alvo.get("status", "Não estudado")
+    icone        = STATUS_ICONE.get(status_atual, "○")
+    reg          = tp_alvo.setdefault("questoes_registro", [])
+    ac_tot       = sum(r.get("acertos",0) for r in reg)
+    qt_tot       = sum(r.get("total",0)   for r in reg)
+    pct_q        = (ac_tot/qt_tot*100) if qt_tot else None
+
+    aula_txt = f"  🎓 {aula_ref}" if aula_ref else ""
+    pct_txt  = f"  •  {pct_q:.0f}% ({ac_tot}/{qt_tot})" if pct_q is not None else ""
+    titulo   = f"{icone} **{top_nome}**  ·  _{mat_nome}_{aula_txt}{pct_txt}"
+
+    key_base = f"{tid}_{key_suffix}"
+
+    with st.expander(titulo):
+        # ── Status ────────────────────────────────────────────────────────
+        novo_status = st.selectbox(
+            "Status", STATUS_LISTA,
+            index=STATUS_LISTA.index(status_atual) if status_atual in STATUS_LISTA else 0,
+            key=f"status_{key_base}")
+        if novo_status != status_atual:
+            tp_alvo["status"]         = novo_status
+            tp_alvo["ultima_revisao"] = _hoje()
+            if novo_status == "Dominado":
+                tp_alvo["proxima_revisao"] = _add_dias(30)
+            save_d()
+            st.rerun()
+
+        if aula_ref:
+            st.caption(f"🎓 Referência de aula: {aula_ref}")
+
+        st.markdown("---")
+
+        # ── Timer Pomodoro vinculado ao tópico ───────────────────────────
+        st.markdown("**⏱ Timer Pomodoro**")
+        cfg    = d["config"]
+        tec    = cfg.get("tecnica", "25/5")
+        ms, mp = (25, 5) if "25" in tec else (50, 10)
+
+        timer_key     = f"timer_ativo_{key_base}"
+        inicio_key    = f"timer_inicio_{key_base}"
+
+        if timer_key not in st.session_state:
+            st.session_state[timer_key] = False
+
+        tc1, tc2, tc3 = st.columns(3)
+        with tc1:
+            if not st.session_state[timer_key]:
+                if st.button("▶ Iniciar", key=f"btn_ini_{key_base}", use_container_width=True):
+                    st.session_state[timer_key]  = True
+                    st.session_state[inicio_key] = time.time()
+                    st.rerun()
+            else:
+                if st.button("⏹ Parar e Salvar", key=f"btn_parar_{key_base}",
+                             use_container_width=True, type="primary"):
+                    decorrido = int(time.time() - st.session_state.get(inicio_key, time.time()))
+                    minutos = max(1, decorrido // 60)
+                    d["sessoes"].append({
+                        "data": _hoje(), "duracao_min": minutos,
+                        "materia_id": mid_alvo, "topico_id": tid,
+                        "notas": f"Tarefa: {top_nome}",
+                    })
                     save_d()
-                    import time; time.sleep(1.2)
-                    st.session_state["simulado_idx"] = s_idx + 1
+                    _atualizar_streak()
+                    st.session_state[timer_key] = False
+                    st.success(f"✅ {minutos} min registrados em '{top_nome}'!")
+                    st.rerun()
+        with tc2:
+            if st.session_state[timer_key]:
+                decorrido = int(time.time() - st.session_state.get(inicio_key, time.time()))
+                st.metric("Tempo decorrido", f"{decorrido//60:02d}:{decorrido%60:02d}")
+            else:
+                st.caption(f"Ciclo sugerido: {ms} min")
+        with tc3:
+            if st.session_state[timer_key]:
+                if st.button("🔄 Atualizar", key=f"btn_refresh_{key_base}",
+                             use_container_width=True):
                     st.rerun()
 
-            elif fila and s_idx >= len(fila):
-                acert = st.session_state.get("simulado_acert",0)
-                total = len(fila)
-                pct   = acert/total*100
-                st.balloons()
-                st.success(
-                    f"🎉 Simulado concluído!  "
-                    f"**{acert}/{total}  ({pct:.0f}%)**")
-                if pct >= 70:
-                    st.info("Excelente! Continue assim.")
+        if st.session_state[timer_key]:
+            st.caption("⏳ Timer rodando — clique em 'Atualizar' para ver o "
+                      "tempo avançar, ou 'Parar e Salvar' quando terminar.")
+
+        st.markdown("---")
+
+        # ── Registro de desempenho em questões ───────────────────────────
+        st.markdown("**📝 Registro de Questões**")
+        with st.form(f"form_questoes_{key_base}", clear_on_submit=True):
+            qc1, qc2 = st.columns(2)
+            with qc1: novos_acertos = st.number_input("Acertos", 0, 999, 0,
+                                                       key=f"ac_{key_base}")
+            with qc2: novo_total    = st.number_input("Total de questões", 0, 999, 0,
+                                                       key=f"tt_{key_base}")
+            if st.form_submit_button("💾 Registrar Desempenho"):
+                if novo_total > 0 and novos_acertos <= novo_total:
+                    reg.append({
+                        "data": _hoje(), "acertos": int(novos_acertos),
+                        "total": int(novo_total),
+                    })
+                    save_d()
+                    st.success(f"✅ {novos_acertos}/{novo_total} registrado!")
+                    st.rerun()
+                elif novo_total == 0:
+                    st.warning("Informe o total de questões resolvidas.")
                 else:
-                    st.warning("Revise os tópicos errados antes da próxima tentativa.")
-                if st.button("Novo Simulado"):
-                    st.session_state["simulado_fila"] = []
-                    st.session_state["simulado_idx"]  = 0
-                    st.rerun()
+                    st.warning("Acertos não pode ser maior que o total.")
 
-    # ── Adicionar questão ─────────────────────────────────────────────────
-    with tab_add:
-        with st.form("form_q", clear_on_submit=True):
-            opts = {m["nome"]: mid for mid, m in mats.items()}
-            enunciado = st.text_area("Enunciado", height=100)
-            st.markdown("**Alternativas:**")
-            ca,cb = st.columns(2)
-            with ca:
-                alt_a = st.text_input("(A)")
-                alt_c = st.text_input("(C)")
-                alt_e = st.text_input("(E) — opcional")
-            with cb:
-                alt_b = st.text_input("(B)")
-                alt_d = st.text_input("(D)")
-            c1,c2,c3 = st.columns(3)
-            with c1: gab    = st.selectbox("Gabarito", ["A","B","C","D","E"])
-            with c2: banca  = st.text_input("Banca")
-            with c3: mat_q  = st.selectbox("Matéria", list(opts.keys()) or ["—"])
-            if st.form_submit_button("💾 Adicionar Questão", type="primary"):
-                alts = {l:t for l,t in zip("ABCDE",[alt_a,alt_b,alt_c,alt_d,alt_e]) if t}
-                if enunciado.strip() and alts:
-                    qid = _novo_id("Q", qs)
-                    qs[qid] = {
-                        "enunciado": enunciado.strip(), "alternativas": alts,
-                        "gabarito": gab, "materia_id": opts.get(mat_q,""),
-                        "banca": banca, "acertos": 0, "tentativas": 0,
+        if reg:
+            resumo = (f"Histórico: {len(reg)} registro(s)  •  "
+                     f"Acumulado: {ac_tot}/{qt_tot} ({pct_q:.0f}%)"
+                     if qt_tot else f"Histórico: {len(reg)} registro(s)")
+            st.caption(resumo)
+            for r in reversed(reg[-5:]):
+                st.caption(f"  {r['data']} — {r['acertos']}/{r['total']}")
+
+        st.markdown("---")
+
+        # ── Criar flashcard rápido a partir do tópico ────────────────────
+        st.markdown("**🃏 Criar Flashcard a partir deste tópico**")
+        with st.form(f"form_fc_rapido_{key_base}", clear_on_submit=True):
+            fc_frente = st.text_input("Frente (pergunta)",
+                                       placeholder=f"ex: O que é {top_nome}?",
+                                       key=f"fcf_{key_base}")
+            fc_verso  = st.text_area("Verso (resposta)", height=80,
+                                      key=f"fcv_{key_base}")
+            if st.form_submit_button("🃏 Criar Flashcard"):
+                if fc_frente.strip() and fc_verso.strip():
+                    fid = _novo_id("FC", d["flashcards"])
+                    d["flashcards"][fid] = {
+                        "frente": fc_frente.strip(), "verso": fc_verso.strip(),
+                        "materia_id": mid_alvo,
+                        "proxima_revisao": _hoje(), "intervalo_idx": 0,
+                        "total_revisoes": 0, "facilidade_media": 3.0,
                         "criado_em": _hoje(),
                     }
                     save_d()
-                    st.success("✅ Questão adicionada!")
+                    st.success("✅ Flashcard criado! Veja em 'Flashcards'.")
                     st.rerun()
+                else:
+                    st.warning("Preencha frente e verso para criar o flashcard.")
 
-    # ── Lista ─────────────────────────────────────────────────────────────
-    with tab_lista:
-        if not qs:
-            st.info("Nenhuma questão ainda.")
-        else:
-            for qid, q in qs.items():
-                mat  = mats.get(q.get("materia_id",""),{}).get("nome","?")
-                tent = q.get("tentativas",0)
-                ac   = q.get("acertos",0)
-                with st.expander(
-                    f"{q['enunciado'][:60]}… — {mat} | "
-                    f"Acertos: {ac}/{tent if tent else '—'}"):
-                    st.markdown(q["enunciado"])
-                    for l,t in q["alternativas"].items():
-                        cor = "#2ecc71" if l==q["gabarito"] else "#e0e0e0"
-                        st.markdown(
-                            f'<span style="color:{cor}">({l}) {t}</span>',
-                            unsafe_allow_html=True)
-                    st.caption(f"Gabarito: {q['gabarito']}  |  Banca: {q.get('banca','—')}")
-                    if st.button("🗑 Remover", key=f"del_q_{qid}"):
-                        del qs[qid]; save_d(); st.rerun()
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  PÁGINA: ANÁLISE / ESTATÍSTICA SEMANAL
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _coletar_registros_questoes(d: dict) -> list:
+    """
+    Percorre todas as matérias/tópicos e retorna uma lista plana de
+    registros de desempenho, cada um já enriquecido com o contexto
+    (matéria, tópico, dificuldade, prioridade, aula_ref). Isso evita
+    repetir a navegação da estrutura aninhada em cada função de análise.
+
+    Cada item: dict com chaves
+        data, acertos, total, materia_id, materia_nome,
+        topico_id, topico_nome, dificuldade, prioridade, aula_ref
+    """
+    registros = []
+    for mid, m in d.get("materias", {}).items():
+        for tid, tp in m.get("topicos", {}).items():
+            for r in tp.get("questoes_registro", []):
+                registros.append({
+                    "data":        r.get("data", ""),
+                    "acertos":     r.get("acertos", 0),
+                    "total":       r.get("total", 0),
+                    "materia_id":  mid,
+                    "materia_nome":m.get("nome", "?"),
+                    "topico_id":   tid,
+                    "topico_nome": tp.get("nome", "?"),
+                    "dificuldade": tp.get("dificuldade", 3),
+                    "prioridade":  tp.get("prioridade", 3),
+                    "aula_ref":    tp.get("aula_ref", ""),
+                })
+    return registros
+
+def _filtrar_por_periodo(registros: list, inicio_iso: str, fim_iso: str) -> list:
+    """Filtra registros cuja data está no intervalo [inicio, fim], inclusive."""
+    return [r for r in registros if inicio_iso <= r["data"] <= fim_iso]
+
+def _agregar_por_materia(registros: list) -> dict:
+    """
+    Agrega acertos/total por matéria.
+    Retorna: {materia_nome: {"acertos": int, "total": int, "pct": float,
+                              "n_registros": int}}
+    """
+    agg = {}
+    for r in registros:
+        nome = r["materia_nome"]
+        a = agg.setdefault(nome, {"acertos": 0, "total": 0, "n_registros": 0})
+        a["acertos"]     += r["acertos"]
+        a["total"]       += r["total"]
+        a["n_registros"] += 1
+    for nome, a in agg.items():
+        a["pct"] = (a["acertos"] / a["total"] * 100) if a["total"] else 0.0
+    return agg
+
+def _agregar_por_topico(registros: list) -> dict:
+    """
+    Agrega acertos/total por tópico (chave = topico_id), preservando
+    contexto de matéria, dificuldade, prioridade e aula_ref para uso
+    posterior na identificação de pontos fracos.
+    """
+    agg = {}
+    for r in registros:
+        tid = r["topico_id"]
+        a = agg.setdefault(tid, {
+            "topico_nome": r["topico_nome"], "materia_nome": r["materia_nome"],
+            "dificuldade": r["dificuldade"], "prioridade": r["prioridade"],
+            "aula_ref": r["aula_ref"], "acertos": 0, "total": 0, "n_registros": 0,
+        })
+        a["acertos"]     += r["acertos"]
+        a["total"]       += r["total"]
+        a["n_registros"] += 1
+    for tid, a in agg.items():
+        a["pct"] = (a["acertos"] / a["total"] * 100) if a["total"] else 0.0
+    return agg
+
+def _identificar_pontos_fracos(agg_topico: dict, min_questoes: int = 3,
+                                limiar_pct: float = 70.0) -> list:
+    """
+    Identifica tópicos com desempenho abaixo do limiar, exigindo um
+    número mínimo de questões respondidas para evitar julgar um tópico
+    a partir de uma amostra pequena (ex: 1 questão errada = 0%, o que
+    distorceria a análise).
+
+    Retorna lista ordenada do PIOR para o melhor desempenho, cada item:
+        (pct, topico_nome, materia_nome, acertos, total, dificuldade,
+         prioridade, aula_ref)
+    """
+    fracos = []
+    for tid, a in agg_topico.items():
+        if a["total"] >= min_questoes and a["pct"] < limiar_pct:
+            fracos.append((
+                a["pct"], a["topico_nome"], a["materia_nome"],
+                a["acertos"], a["total"], a["dificuldade"],
+                a["prioridade"], a["aula_ref"],
+            ))
+    fracos.sort(key=lambda x: x[0])  # pior desempenho primeiro
+    return fracos
+
+def _classificar_prioridade_revisao(pct: float, prioridade: int,
+                                     dificuldade: int) -> tuple:
+    """
+    Classifica a urgência de revisão de um ponto fraco combinando:
+    - quão baixo é o desempenho (pct)
+    - quão importante é o tópico no edital (prioridade)
+    - quão difícil ele é (dificuldade)
+
+    Retorna (label, cor) para exibição.
+    """
+    score = (100 - pct) * (prioridade / 5) * (dificuldade / 5)
+    if score >= 35:
+        return "🔴 Urgente", "#e74c3c"
+    elif score >= 18:
+        return "🟠 Alta", "#f5a623"
+    else:
+        return "🟡 Moderada", "#f1c40f"
+
+
+def p_analise():
+    d = get_d()
+
+    st.markdown('<p class="page-title">📈 Análise e Estatística Semanal</p>',
+                unsafe_allow_html=True)
+    st.markdown(
+        '<p class="page-sub">Desempenho em questões por matéria e tópico, '
+        'com identificação automática dos pontos que mais precisam de '
+        'revisão.</p>', unsafe_allow_html=True)
+
+    registros_todos = _coletar_registros_questoes(d)
+
+    if not registros_todos:
+        st.info(
+            "Nenhum registro de questões ainda. Resolva questões dentro de "
+            "uma tarefa (aba '✅ Tarefas' → expandir um tópico → "
+            "'Registro de Questões') para começar a gerar estatísticas aqui.")
+        return
+
+    # ── Seletor de período ───────────────────────────────────────────────
+    hj       = datetime.date.today()
+    ini_sem  = hj - datetime.timedelta(days=hj.weekday())
+    fim_sem  = ini_sem + datetime.timedelta(days=6)
+
+    col_per, col_info = st.columns([2,3])
+    with col_per:
+        periodo_label = st.radio(
+            "Período de análise",
+            ["Esta semana", "Últimos 7 dias", "Desde o início"],
+            horizontal=True, label_visibility="collapsed")
+
+    if periodo_label == "Esta semana":
+        ini_iso, fim_iso = ini_sem.isoformat(), fim_sem.isoformat()
+        desc_periodo = f"{ini_sem.strftime('%d/%m')} a {fim_sem.strftime('%d/%m')} (semana atual)"
+    elif periodo_label == "Últimos 7 dias":
+        ini_iso = (hj - datetime.timedelta(days=6)).isoformat()
+        fim_iso = hj.isoformat()
+        desc_periodo = "últimos 7 dias corridos"
+    else:
+        ini_iso, fim_iso = "0000-01-01", "9999-12-31"
+        desc_periodo = "todo o histórico"
+
+    with col_info:
+        st.caption(f"📅 Mostrando: **{desc_periodo}**")
+
+    registros = _filtrar_por_periodo(registros_todos, ini_iso, fim_iso)
+
+    if not registros:
+        st.warning(
+            f"Nenhum registro de questões no período selecionado "
+            f"({desc_periodo}). Tente 'Desde o início' para ver todo o "
+            f"histórico.")
+        return
+
+    # ── KPIs gerais do período ───────────────────────────────────────────
+    total_ac  = sum(r["acertos"] for r in registros)
+    total_qt  = sum(r["total"]   for r in registros)
+    pct_geral = (total_ac/total_qt*100) if total_qt else 0
+    n_topicos_trabalhados = len({r["topico_id"] for r in registros})
+
+    c1,c2,c3,c4 = st.columns(4)
+    c1.metric("Questões resolvidas", f"{total_qt}")
+    c2.metric("Acertos",             f"{total_ac}")
+    c3.metric("Aproveitamento geral", f"{pct_geral:.0f}%")
+    c4.metric("Tópicos trabalhados", f"{n_topicos_trabalhados}")
+
+    cor_geral = "#2ecc71" if pct_geral>=70 else "#f5a623" if pct_geral>=50 else "#e74c3c"
+    st.markdown(_barra_html(pct_geral/100, cor_geral, 14), unsafe_allow_html=True)
+
+    st.divider()
+
+    # ── Desempenho por matéria ───────────────────────────────────────────
+    st.subheader("📊 Desempenho por Matéria")
+    agg_mat = _agregar_por_materia(registros)
+    agg_mat_ordenado = sorted(agg_mat.items(), key=lambda x: x[1]["pct"])
+
+    try:
+        import pandas as pd
+        df_mat = pd.DataFrame([
+            {"Matéria": nome, "Aproveitamento (%)": round(a["pct"],1)}
+            for nome, a in sorted(agg_mat.items(), key=lambda x: -x[1]["pct"])
+        ]).set_index("Matéria")
+        st.bar_chart(df_mat, color="#4ecdc4")
+    except ImportError:
+        pass
+
+    for nome, a in agg_mat_ordenado:
+        cor = "#2ecc71" if a["pct"]>=70 else "#f5a623" if a["pct"]>=50 else "#e74c3c"
+        col_n, col_b = st.columns([2,5])
+        with col_n:
+            st.markdown(f"**{nome}**")
+            st.caption(f"{a['acertos']}/{a['total']} questões  •  {a['n_registros']} registro(s)")
+        with col_b:
+            st.markdown(_barra_html(a["pct"]/100, cor, 12), unsafe_allow_html=True)
+            st.caption(f"{a['pct']:.0f}%")
+
+    st.divider()
+
+    # ── Pontos fracos identificados ──────────────────────────────────────
+    st.subheader("🎯 Pontos Fracos Identificados")
+    st.caption(
+        "Tópicos com pelo menos 3 questões respondidas e aproveitamento "
+        "abaixo de 70% — esses são os candidatos prioritários para revisão.")
+
+    agg_top = _agregar_por_topico(registros)
+    fracos  = _identificar_pontos_fracos(agg_top, min_questoes=3, limiar_pct=70.0)
+
+    if not fracos:
+        st.success(
+            "✅ Nenhum ponto fraco identificado com os critérios atuais "
+            "(mínimo de 3 questões e abaixo de 70%). Ou seu desempenho está "
+            "consistente, ou ainda faltam registros suficientes por tópico "
+            "para uma análise confiável.")
+    else:
+        for pct, top_nome, mat_nome, ac, tot, dif, prio, aula_ref in fracos:
+            label_urg, cor_urg = _classificar_prioridade_revisao(pct, prio, dif)
+            aula_txt = f"  🎓 {aula_ref}" if aula_ref else ""
+            st.markdown(
+                f'<div style="background:#0f3460;border-left:4px solid {cor_urg};'
+                f'border-radius:8px;padding:12px 16px;margin:6px 0;">'
+                f'<div style="display:flex;justify-content:space-between;'
+                f'align-items:center;">'
+                f'<strong style="font-size:14px;">{top_nome}</strong>'
+                f'<span style="color:{cor_urg};font-weight:700;font-size:12px;">'
+                f'{label_urg}</span>'
+                f'</div>'
+                f'<div style="color:#9e9e9e;font-size:12px;margin-top:4px;">'
+                f'{mat_nome}{aula_txt}'
+                f'</div>'
+                f'<div style="color:#e74c3c;font-weight:600;font-size:13px;'
+                f'margin-top:6px;">{pct:.0f}% de aproveitamento  '
+                f'({ac}/{tot} questões)</div>'
+                f'</div>', unsafe_allow_html=True)
+
+        st.caption(
+            "💡 **Como a urgência é calculada:** combina o quão baixo é seu "
+            "aproveitamento com a prioridade e dificuldade do tópico no "
+            "edital. Um tópico de prioridade 5 com 40% de acerto é mais "
+            "urgente que um de prioridade 2 com o mesmo percentual.")
+
+    st.divider()
+
+    # ── Recomendação de conteúdos a revisar/estudar mais ─────────────────
+    st.subheader("📚 Recomendação de Revisão")
+    if fracos:
+        top5 = fracos[:5]
+        st.markdown(
+            "Com base nos pontos fracos acima, priorize revisar, **nesta ordem**:")
+        for i, (pct, top_nome, mat_nome, ac, tot, dif, prio, aula_ref) in enumerate(top5, 1):
+            aula_txt = f" (consulte: {aula_ref})" if aula_ref else ""
+            st.markdown(
+                f"{i}. **{top_nome}** — _{mat_nome}_ — "
+                f"{pct:.0f}% de acerto{aula_txt}")
+
+        st.markdown("")
+        if st.button("➕ Adicionar estes tópicos como prioridade máxima",
+                     help="Define prioridade 5 e status 'Revisar' para os "
+                          "tópicos listados acima, fazendo-os aparecer no "
+                          "topo do plano semanal."):
+            ajustados = 0
+            nomes_top5 = {top_nome for _, top_nome, *_ in top5}
+            for mid, m in d["materias"].items():
+                for tid, tp in m.get("topicos", {}).items():
+                    if tp["nome"] in nomes_top5:
+                        tp["prioridade"] = 5
+                        if tp.get("status") != "Dominado":
+                            tp["status"] = "Revisar"
+                        ajustados += 1
+            save_d()
+            st.success(f"✅ {ajustados} tópico(s) marcados como prioridade "
+                      f"máxima! Veja o plano atualizado em 'Tarefas'.")
+            st.rerun()
+    else:
+        st.info(
+            "Continue registrando seu desempenho em questões dentro das "
+            "tarefas para receber recomendações personalizadas de revisão "
+            "aqui.")
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  PÁGINA: FEYNMAN
@@ -1493,9 +1899,8 @@ def main():
         "🏠 Dashboard":          p_dashboard,
         "📚 Matérias e Tópicos": p_materias,
         "🃏 Flashcards":         p_flashcards,
-        "📅 Planejamento":       p_planejamento,
-        "⏱ Sessões":            p_sessoes,
-        "📝 Questões":           p_questoes,
+        "✅ Tarefas":            p_tarefas,
+        "📈 Análise":            p_analise,
         "✍ Feynman":            p_feynman,
         "💾 Exportar":           p_exportar,
     }
