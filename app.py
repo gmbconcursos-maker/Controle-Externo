@@ -1057,6 +1057,12 @@ def _distribuir_pela_semana(candidatos: list, dia_atual_idx: int,
     modo "completa": preenche todos os 7 dias, como antes (útil para
         visualizar/planejar a semana inteira de uma vez, ex.: domingo
         à noite planejando a semana toda).
+
+    IMPORTANTE: cada tópico (tid) aparece em NO MÁXIMO um dia da semana.
+    Quando há poucos tópicos pendentes, alguns dias ficam "livres" em vez
+    de repetir um tópico já mostrado em outro dia — repetir geraria chaves
+    de widget duplicadas no Streamlit (mesmo tid renderizado duas vezes na
+    mesma tela) e quebraria a página com StreamlitDuplicateElementKey.
     """
     plano = {i: [] for i in range(7)}
     if not candidatos:
@@ -1072,8 +1078,9 @@ def _distribuir_pela_semana(candidatos: list, dia_atual_idx: int,
 
     for i, dia_idx in enumerate(dias_uteis):
         sl = candidatos[i*por_d:(i+1)*por_d]
-        if not sl and candidatos:
-            sl = candidatos[:1]
+        # Não reaproveitar candidatos[:1] aqui — isso duplicaria um tópico
+        # que já apareceu em outro dia. Se não houver candidatos suficientes
+        # para preencher este dia, ele simplesmente fica vazio (correto).
         plano[dia_idx] = sl
 
     return plano
