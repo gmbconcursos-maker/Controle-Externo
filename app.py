@@ -1045,45 +1045,70 @@ def _candidatos_pendentes(d: dict) -> list:
     candidatos.sort(reverse=True)
     return candidatos
 
+def _vagas_por_dia(meta_semanal_horas: float,
+                    horas_por_tarefa: float = 2.0) -> list:
+    """
+    Calcula quantas vagas de tarefa cada dia da semana tem, baseado na
+    fórmula: total_tarefas = meta_semanal_horas / horas_por_tarefa.
+
+    O resto da divisão é espalhado uniformemente entre os dias — assim
+    a diferença máxima entre qualquer dois dias é sempre 1 tarefa.
+
+    Exemplos:
+        28h / 2h = 14 tarefas -> [2,2,2,2,2,2,2]  (exato)
+        30h / 2h = 15 tarefas -> [3,2,2,2,2,2,2]  (resto=1)
+        34h / 2h = 17 tarefas -> [3,2,3,2,2,3,2]  (resto=3, espalhado)
+    """
+    total = max(0, round(meta_semanal_horas / horas_por_tarefa))
+    base  = total // 7
+    resto = total % 7
+    vagas = [base] * 7
+    if resto > 0:
+        passo = 7 / resto
+        for k in range(resto):
+            idx = round(k * passo) % 7
+            while vagas[idx] > base:
+                idx = (idx + 1) % 7
+            vagas[idx] += 1
+    return vagas
+
+
 def _distribuir_pela_semana(candidatos: list, dia_atual_idx: int,
-                             modo: str) -> dict:
+                             modo: str, vagas_por_dia: list) -> tuple:
     """
-    Distribui os tópicos pendentes pelos dias da semana.
+    Distribui candidatos (ordenados por peso Pareto, maior primeiro) nas
+    vagas fixas de cada dia calculadas por _vagas_por_dia().
 
-    modo "restante": só preenche de hoje até domingo (dias passados ficam
-        vazios/cinza) — útil para quem abre o app no meio da semana e quer
-        saber "o que ainda falta esta semana", sem reabrir o que já passou.
+    Garante que cada tópico aparece em NO MÁXIMO um dia da semana, e que
+    a diferença de quantidade entre quaisquer dois dias é sempre no máximo
+    1 tarefa (jamais 4 vs 7 como acontecia antes).
 
-    modo "completa": preenche todos os 7 dias, como antes (útil para
-        visualizar/planejar a semana inteira de uma vez, ex.: domingo
-        à noite planejando a semana toda).
+    Candidatos que não couberem na semana (excedentes) são retornados
+    separadamente — terão prioridade máxima no próximo recálculo.
 
-    IMPORTANTE: cada tópico (tid) aparece em NO MÁXIMO um dia da semana.
-    Quando há poucos tópicos pendentes, alguns dias ficam "livres" em vez
-    de repetir um tópico já mostrado em outro dia — repetir geraria chaves
-    de widget duplicadas no Streamlit (mesmo tid renderizado duas vezes na
-    mesma tela) e quebraria a página com StreamlitDuplicateElementKey.
+    Retorna (plano, fila_excedente):
+        plano: dict {0..6: lista de candidatos}
+        fila_excedente: candidatos que não couberam nesta semana
     """
-    plano = {i: [] for i in range(7)}
+    plano          = {i: [] for i in range(7)}
+    fila_excedente = []
+
     if not candidatos:
-        return plano
+        return plano, fila_excedente
 
     if modo == "restante":
         dias_uteis = list(range(dia_atual_idx, 7))
     else:
         dias_uteis = list(range(7))
 
-    n_dias = len(dias_uteis) or 1
-    por_d  = max(1, len(candidatos) // n_dias)
+    idx = 0
+    for dia_idx in dias_uteis:
+        vaga = vagas_por_dia[dia_idx]
+        plano[dia_idx] = candidatos[idx: idx + vaga]
+        idx += vaga
 
-    for i, dia_idx in enumerate(dias_uteis):
-        sl = candidatos[i*por_d:(i+1)*por_d]
-        # Não reaproveitar candidatos[:1] aqui — isso duplicaria um tópico
-        # que já apareceu em outro dia. Se não houver candidatos suficientes
-        # para preencher este dia, ele simplesmente fica vazio (correto).
-        plano[dia_idx] = sl
-
-    return plano
+    fila_excedente = candidatos[idx:]
+    return plano, fila_excedente
 
 def p_tarefas():
     """
@@ -1205,18 +1230,24 @@ selecionado.
     ms, mp = (25, 5) if "25" in cfg.get("tecnica","25/5") else (50, 10)
     hpd    = cfg.get("horas_por_dia", 4)
     ciclos = max(1, int(hpd * 60 / (ms + mp)))
+    meta   = cfg.get("meta_semanal_horas", 28)
 
     hj            = datetime.date.today()
     dia_atual_idx = hj.weekday()  # 0 = Segunda ... 6 = Domingo
+
+    vagas  = _vagas_por_dia(meta, horas_por_tarefa=2.0)
+    tarefas_semana = sum(vagas)
 
     candidatos = _candidatos_pendentes(d)
 
     col_tit, col_modo = st.columns([3,2])
     with col_tit:
         st.subheader("📅 Tarefas da Semana")
-        st.caption(f"Hoje é **{_DIAS_SEMANA[dia_atual_idx]}**  •  "
-                   f"Baseado em Pareto (prioridade × dificuldade)  •  "
-                   f"{ciclos} ciclos Pomodoro ({ms}'+{mp}') por dia")
+        st.caption(
+            f"Hoje é **{_DIAS_SEMANA[dia_atual_idx]}**  •  "
+            f"Meta: {meta}h ÷ 2h/tarefa = **{tarefas_semana} tarefas/semana**  •  "
+            f"≈ {tarefas_semana/7:.1f} tarefas/dia  •  "
+            f"{ciclos} ciclos Pomodoro ({ms}'+{mp}') por dia")
     with col_modo:
         modo_label = st.radio(
             "Modo de visualização",
@@ -1229,9 +1260,10 @@ selecionado.
     if not candidatos:
         st.info("Nenhum tópico pendente! Você dominou tudo ou não cadastrou tópicos ainda.")
     else:
-        plano = _distribuir_pela_semana(candidatos, dia_atual_idx, modo)
+        plano, excedentes = _distribuir_pela_semana(
+            candidatos, dia_atual_idx, modo, vagas)
 
-        # ── Renderização dos 7 dias, cada tópico é um expander clicável ─────
+        # ── Renderização dos 7 dias ───────────────────────────────────────
         cols_dias = st.columns(7)
         for i, (dia, col) in enumerate(zip(_DIAS_SEMANA, cols_dias)):
             with col:
@@ -1267,14 +1299,28 @@ selecionado.
         if modo == "restante":
             st.caption(
                 "💡 Modo 'restante': os tópicos já se redistribuem "
-                "automaticamente entre hoje e domingo. Dias passados não "
-                "são reabertos — o que não foi estudado neles entra na "
-                "redistribuição dos dias seguintes na próxima vez que você "
-                "abrir esta página.")
+                "automaticamente entre hoje e domingo.")
         else:
             st.caption(
                 "💡 Modo 'completa': mostra a semana inteira de Segunda a "
                 "Domingo, útil para planejar com antecedência.")
+
+        # ── Fila de excedentes (tópicos que não cabem nesta semana) ──────
+        if excedentes:
+            with st.expander(
+                f"📋 {len(excedentes)} tópico(s) na fila para as próximas semanas"):
+                st.caption(
+                    "Esses tópicos têm peso Pareto menor que os da semana atual "
+                    "e entrarão automaticamente no plano conforme você for "
+                    "marcando tópicos como 'Dominado' ou aumentando a meta semanal.")
+                for _, mat, top, tid, aula_ref in excedentes:
+                    aula = f"  🎓 {aula_ref}" if aula_ref else ""
+                    st.markdown(
+                        f'<div style="background:#0f3460;border-radius:6px;'
+                        f'padding:6px 10px;margin:3px 0;font-size:12px;">'
+                        f'<strong>{top}</strong>  '
+                        f'<span style="color:#9e9e9e;">— {mat}{aula}</span>'
+                        f'</div>', unsafe_allow_html=True)
 
     # ── Revisões pendentes hoje (spaced repetition de tópico) ──────────────
     st.divider()
