@@ -1027,19 +1027,34 @@ def p_flashcards():
 _DIAS_SEMANA = ["Segunda-feira","Terça-feira","Quarta-feira","Quinta-feira",
                 "Sexta-feira","Sábado","Domingo"]
 
+_STATUS_BONUS_PESO = {
+    "Em andamento": 1.5,   # +50%: terminar o que já começou tem prioridade
+    "Revisar":      1.3,   # +30%: também merece atenção elevada
+    "Não estudado": 1.0,   # sem bônus — peso bruto normal
+}
+
 def _candidatos_pendentes(d: dict) -> list:
     """
-    Lista de tópicos não dominados, ordenada por peso (prioridade × dificuldade)
-    do maior para o menor — é a aplicação prática do Pareto: tópicos mais
-    importantes e mais difíceis sobem para o topo da fila.
+    Lista de tópicos não dominados, ordenada por peso do maior para o
+    menor — é a aplicação prática do Pareto, com um ajuste adicional:
+
+        peso = prioridade × dificuldade × bônus_status
+
+    O bônus de status faz tópicos "Em andamento" (×1.5) e "Revisar" (×1.3)
+    subirem no ranking em relação a tópicos "Não estudado" de peso bruto
+    similar. A lógica por trás: se você já começou um tópico, geralmente
+    faz mais sentido terminá-lo do que abrir um novo — isso evita acumular
+    tarefas "penduradas" indefinidamente.
 
     Cada item: (peso, nome_materia, nome_topico, topico_id, aula_ref)
     """
     candidatos = []
     for mid, m in d["materias"].items():
         for tid, tp in m.get("topicos", {}).items():
-            if tp.get("status") != "Dominado":
-                peso = tp.get("prioridade", 3) * tp.get("dificuldade", 3)
+            status = tp.get("status", "Não estudado")
+            if status != "Dominado":
+                bonus = _STATUS_BONUS_PESO.get(status, 1.0)
+                peso  = tp.get("prioridade", 3) * tp.get("dificuldade", 3) * bonus
                 candidatos.append((peso, m["nome"], tp["nome"], tid,
                                    tp.get("aula_ref", "")))
     candidatos.sort(reverse=True)
@@ -1263,6 +1278,19 @@ selecionado.
         plano, excedentes = _distribuir_pela_semana(
             candidatos, dia_atual_idx, modo, vagas)
 
+        # ── Tarefas extras puxadas manualmente para hoje (temporário) ────
+        # Vive só em session_state — não é persistido no Supabase/JSON.
+        # Ao reabrir o app, o plano volta ao normal e a fila de excedentes
+        # reflete só o cálculo puro de vagas × peso Pareto.
+        extras_hoje = st.session_state.setdefault("_extras_hoje", [])
+        # Remover da exibição qualquer extra que já tenha sido dominado
+        # ou que não esteja mais entre os candidatos (ex: removido)
+        ids_candidatos_validos = {c[3] for c in candidatos}
+        extras_hoje[:] = [e for e in extras_hoje if e[3] in ids_candidatos_validos]
+        ids_extras_hoje = {e[3] for e in extras_hoje}
+        # Excedentes não devem repetir o que já foi puxado como extra
+        excedentes = [e for e in excedentes if e[3] not in ids_extras_hoje]
+
         # ── Renderização dos 7 dias ───────────────────────────────────────
         cols_dias = st.columns(7)
         for i, (dia, col) in enumerate(zip(_DIAS_SEMANA, cols_dias)):
@@ -1285,15 +1313,31 @@ selecionado.
                         unsafe_allow_html=True)
                     continue
 
-                sl = plano.get(i, [])
+                sl = list(plano.get(i, []))
+                if eh_hoje:
+                    sl = sl + extras_hoje
+
                 if not sl:
                     st.caption("Livre / revisão")
-                    continue
+                else:
+                    for _, mat, top, tid, aula_ref in sl:
+                        _render_tarefa_card(d, tid, mat, top, aula_ref, eh_hoje,
+                                            key_suffix=f"d{i}")
+                    st.caption(f"⏱ {ciclos}x{ms}'")
 
-                for _, mat, top, tid, aula_ref in sl:
-                    _render_tarefa_card(d, tid, mat, top, aula_ref, eh_hoje,
-                                        key_suffix=f"d{i}")
-                st.caption(f"⏱ {ciclos}x{ms}'")
+                # ── Botão de tarefa extra, só no dia de hoje ──────────────
+                if eh_hoje:
+                    if excedentes:
+                        if st.button("➕ Tarefa extra", key="btn_extra_hoje",
+                                     use_container_width=True,
+                                     help="Puxa o próximo tópico de maior "
+                                          "peso Pareto da fila para hoje. "
+                                          "Vale só para esta sessão."):
+                            proximo = excedentes[0]
+                            extras_hoje.append(proximo)
+                            st.rerun()
+                    else:
+                        st.caption("✅ Fila de excedentes vazia")
 
         st.divider()
         if modo == "restante":
