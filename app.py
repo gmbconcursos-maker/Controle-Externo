@@ -53,131 +53,250 @@ st.set_page_config(
 )
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  CSS CUSTOMIZADO (responsivo — funciona no iPhone)
+#  SISTEMA DE DESIGN
+#
+#  Paleta: ardósia escura com um único acento dourado-acinzentado, evocando
+#  precisão e autoridade técnica — sem gamificação, sem cor decorativa.
+#  Tipografia: serifada discreta para títulos (remete a documento oficial),
+#  sans-serif neutra para corpo e dados.
+#  Status e navegação usam glifos tipográficos (traços, pontos) em vez de
+#  emojis — o único emoji tolerado no produto é o símbolo de fogo do streak,
+#  por ser a única metáfora sem substituto tipográfico igualmente claro.
 # ═══════════════════════════════════════════════════════════════════════════
 
 st.markdown("""
 <style>
-/* Tema escuro customizado */
+@import url('https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,500;8..60,600&family=Inter:wght@400;500;600;700&display=swap');
+
 :root {
-    --accent:   #e94560;
-    --accent2:  #f5a623;
-    --accent3:  #4ecdc4;
-    --verde:    #2ecc71;
-    --vermelho: #e74c3c;
-    --card:     #0f3460;
-    --panel:    #16213e;
+    --bg:        #0B1320;
+    --surface:   #141D2E;
+    --surface-2: #1C2940;
+    --border:    #28344A;
+    --accent:    #C9A227;
+    --accent-dim:#8A741E;
+    --text:      #E8EBF0;
+    --text-dim:  #8993A8;
+    --text-faint:#5C6680;
+    --ok:        #5C9B7C;
+    --warn:      #C98A3E;
+    --danger:    #B0584F;
 }
 
-/* Esconder menu padrão do Streamlit */
+html, body, [class*="css"] { font-family: 'Inter', sans-serif; }
+
 #MainMenu, footer, header { visibility: hidden; }
 
-/* Sidebar */
+[data-testid="stAppViewContainer"], .stApp { background: var(--bg); }
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
 [data-testid="stSidebar"] {
-    background: #16213e !important;
+    background: var(--surface) !important;
+    border-right: 1px solid var(--border);
 }
 [data-testid="stSidebar"] .stRadio label {
-    font-size: 15px !important;
-    padding: 6px 0 !important;
+    font-size: 14px !important;
+    padding: 7px 0 !important;
+    color: var(--text-dim) !important;
+    letter-spacing: 0.01em;
 }
+[data-testid="stSidebar"] .stRadio label:hover { color: var(--text) !important; }
 
-/* Botões principais */
+/* ── Botões ──────────────────────────────────────────────────────────── */
 .stButton > button {
-    border-radius: 8px !important;
-    font-weight: 600 !important;
-    transition: all 0.2s !important;
+    border-radius: 6px !important;
+    font-weight: 500 !important;
+    font-size: 14px !important;
+    letter-spacing: 0.01em;
+    transition: all 0.15s ease !important;
+    border: 1px solid transparent !important;
+}
+.stButton > button:hover { transform: translateY(-1px); }
+.stButton > button[kind="primary"] {
+    background: var(--accent) !important;
+    color: #0B1320 !important;
+}
+.stButton > button[kind="primary"]:hover { background: #D9B43A !important; }
+.stButton > button[kind="secondary"] {
+    background: var(--surface-2) !important;
+    color: var(--text) !important;
+    border: 1px solid var(--border) !important;
 }
 
-/* Cards KPI */
+/* ── Tipografia de página ───────────────────────────────────────────── */
+.page-title {
+    font-family: 'Source Serif 4', serif;
+    font-size: 25px;
+    font-weight: 600;
+    color: var(--text);
+    letter-spacing: -0.01em;
+    margin-bottom: 2px;
+}
+.page-sub {
+    color: var(--text-dim);
+    font-size: 13px;
+    margin-bottom: 28px;
+    font-weight: 400;
+}
+.section-label {
+    font-family: 'Source Serif 4', serif;
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 4px 0 12px;
+}
+.eyebrow {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--text-faint);
+}
+
+/* ── Cards e métricas ────────────────────────────────────────────────── */
 .kpi-card {
-    background: linear-gradient(135deg, #0f3460, #16213e);
-    border: 1px solid #2d2d4e;
-    border-radius: 12px;
-    padding: 16px 20px;
-    text-align: center;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 18px 20px;
     margin: 4px 0;
 }
-.kpi-valor { font-size: 28px; font-weight: 700; margin: 0; }
-.kpi-label { font-size: 12px; color: #9e9e9e; margin: 0; }
+.kpi-valor {
+    font-family: 'Source Serif 4', serif;
+    font-size: 26px;
+    font-weight: 600;
+    color: var(--text);
+    margin: 0;
+    line-height: 1.1;
+}
+.kpi-label {
+    font-size: 11px;
+    color: var(--text-faint);
+    margin: 4px 0 0;
+    letter-spacing: 0.03em;
+    text-transform: uppercase;
+}
 
-/* Barra de progresso customizada */
-.barra-wrap {
-    background: #2d2d4e;
+[data-testid="stMetric"] {
+    background: var(--surface);
     border-radius: 8px;
-    height: 10px;
+    padding: 14px 18px;
+    border: 1px solid var(--border);
+}
+[data-testid="stMetricLabel"] {
+    color: var(--text-faint) !important;
+    font-size: 11px !important;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+[data-testid="stMetricValue"] {
+    color: var(--text) !important;
+    font-family: 'Source Serif 4', serif !important;
+}
+
+/* ── Barra de progresso ──────────────────────────────────────────────── */
+.barra-wrap {
+    background: var(--surface-2);
+    border-radius: 4px;
+    height: 6px;
     width: 100%;
     overflow: hidden;
 }
 .barra-fill {
-    height: 10px;
-    border-radius: 8px;
-    transition: width 0.4s ease;
+    height: 6px;
+    border-radius: 4px;
+    transition: width 0.3s ease;
+    background: var(--accent);
 }
 
-/* Badge de status */
-.badge {
-    display: inline-block;
-    padding: 2px 10px;
-    border-radius: 20px;
+/* ── Indicador de status (substitui ícones coloridos por traço + texto) ── */
+.status-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
     font-size: 12px;
-    font-weight: 600;
+    font-weight: 500;
+    color: var(--text-dim);
 }
-.badge-dominado   { background:#1a4731; color:#2ecc71; }
-.badge-andamento  { background:#3d2b00; color:#f5a623; }
-.badge-revisar    { background:#3d1a00; color:#e67e22; }
-.badge-nao        { background:#2d2d2d; color:#9e9e9e; }
+.status-dot {
+    width: 7px; height: 7px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+.dot-nao        { background: var(--text-faint); }
+.dot-andamento  { background: var(--warn); }
+.dot-revisar    { background: var(--accent); }
+.dot-dominado   { background: var(--ok); }
 
-/* Flashcard */
-.flashcard-frente {
-    background: linear-gradient(135deg, #0f3460, #1a1a2e);
-    border: 2px solid #f5a623;
-    border-radius: 16px;
-    padding: 28px 24px;
+/* ── Cartão de tarefa / flashcard ────────────────────────────────────── */
+.task-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+    margin: 5px 0;
+    font-size: 13px;
+}
+.task-card.today { border-color: var(--accent-dim); }
+.task-card .t-name { color: var(--text); font-weight: 500; }
+.task-card .t-meta  { color: var(--text-faint); font-size: 11px; }
+
+.day-marker {
+    border-radius: 4px;
+    padding: 4px 8px;
     text-align: center;
-    font-size: 18px;
+    font-size: 10px;
     font-weight: 600;
-    min-height: 120px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--bg);
+    background: var(--accent);
+    margin-bottom: 6px;
+}
+
+.flashcard-frente {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 32px 28px;
+    text-align: center;
+    font-size: 17px;
+    font-weight: 500;
+    color: var(--text);
+    min-height: 110px;
     display: flex;
     align-items: center;
     justify-content: center;
 }
 .flashcard-verso {
-    background: linear-gradient(135deg, #0a3d2b, #1a1a2e);
-    border: 2px solid #2ecc71;
-    border-radius: 16px;
-    padding: 28px 24px;
-    font-size: 15px;
-    min-height: 120px;
-}
-
-/* Responsivo mobile */
-@media (max-width: 768px) {
-    .kpi-valor { font-size: 22px; }
-    .flashcard-frente { font-size: 15px; padding: 20px 16px; }
-}
-
-/* Título da página */
-.page-title {
-    font-size: 26px;
-    font-weight: 700;
-    margin-bottom: 4px;
-}
-.page-sub {
-    color: #9e9e9e;
-    font-size: 13px;
-    margin-bottom: 20px;
-}
-
-/* Linha separadora */
-hr { border-color: #2d2d4e !important; }
-
-/* Métricas nativas do Streamlit */
-[data-testid="stMetric"] {
-    background: #0f3460;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-left: 2px solid var(--ok);
     border-radius: 10px;
-    padding: 12px 16px;
-    border: 1px solid #2d2d4e;
+    padding: 26px 24px;
+    font-size: 15px;
+    color: var(--text);
+    min-height: 100px;
 }
+
+/* ── Cartão de ponto fraco / alerta ──────────────────────────────────── */
+.weak-card {
+    background: var(--surface);
+    border-radius: 8px;
+    padding: 12px 16px;
+    margin: 6px 0;
+    border-left: 2px solid var(--border);
+}
+
+/* ── Responsivo mobile ───────────────────────────────────────────────── */
+@media (max-width: 768px) {
+    .kpi-valor { font-size: 21px; }
+    .page-title { font-size: 21px; }
+    .flashcard-frente { font-size: 15px; padding: 22px 18px; }
+}
+
+hr { border-color: var(--border) !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -478,21 +597,29 @@ def _carregar_demo():
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _prio_cor(p: int) -> str:
-    return ["","#e74c3c","#e67e22","#f1c40f","#2ecc71","#27ae60"][p]
+    """
+    Escala de prioridade em tons do próprio acento (não usa vermelho/verde
+    tipo semáforo, que tende a um registro mais lúdico). Prioridades altas
+    usam o acento pleno; baixas, uma versão esmaecida.
+    """
+    escala = ["", "#5C6680", "#6B7385", "#8993A8", "#C9A227", "#C9A227"]
+    return escala[p]
 
 def _status_badge(s: str) -> str:
     cls = {"Dominado":"dominado","Em andamento":"andamento",
            "Revisar":"revisar","Não estudado":"nao"}.get(s,"nao")
-    icn = STATUS_ICONE.get(s,"○")
-    return f'<span class="badge badge-{cls}">{icn} {s}</span>'
+    return (f'<span class="status-tag">'
+            f'<span class="status-dot dot-{cls}"></span>{s}</span>')
 
-def _barra_html(pct: float, cor: str = "#2ecc71", altura: int = 10) -> str:
+def _barra_html(pct: float, cor: str = None, altura: int = 6) -> str:
     w = int(max(0, min(100, pct * 100)))
+    cor = cor or "var(--accent)"
     return (f'<div class="barra-wrap">'
             f'<div class="barra-fill" style="width:{w}%;background:{cor};height:{altura}px;"></div>'
             f'</div>')
 
-def _kpi(label: str, valor: str, cor: str = "#e94560") -> str:
+def _kpi(label: str, valor: str, cor: str = None) -> str:
+    cor = cor or "var(--text)"
     return (f'<div class="kpi-card">'
             f'<p class="kpi-valor" style="color:{cor}">{valor}</p>'
             f'<p class="kpi-label">{label}</p>'
@@ -791,8 +918,32 @@ def p_materias():
                             save_d()
                             st.rerun()
                     with t_col4:
-                        dif = tp.get("dificuldade",3)
-                        st.caption(f"Dif: {'★'*dif}  Prio: {tp.get('prioridade',3)}")
+                        td1, td2 = st.columns(2)
+                        with td1:
+                            st.caption("Dificuldade")
+                            nova_dif = st.selectbox(
+                                "Dificuldade", [1,2,3,4,5],
+                                index=tp.get("dificuldade",3)-1,
+                                key=f"dif_{mid}_{tid}",
+                                format_func=lambda x: f"{'★'*x}",
+                                label_visibility="collapsed")
+                            if nova_dif != tp.get("dificuldade",3):
+                                tp["dificuldade"] = nova_dif
+                                save_d()
+                                st.rerun()
+                        with td2:
+                            st.caption("Prioridade")
+                            nova_prio = st.selectbox(
+                                "Prioridade", [5,4,3,2,1],
+                                index=[5,4,3,2,1].index(tp.get("prioridade",3))
+                                      if tp.get("prioridade",3) in [5,4,3,2,1] else 2,
+                                key=f"prio_{mid}_{tid}",
+                                format_func=lambda x: f"P{x}",
+                                label_visibility="collapsed")
+                            if nova_prio != tp.get("prioridade",3):
+                                tp["prioridade"] = nova_prio
+                                save_d()
+                                st.rerun()
 
                     # Campo editável de referência de aula/material
                     with st.form(f"form_aula_{mid}_{tid}", clear_on_submit=False):
