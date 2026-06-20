@@ -1024,6 +1024,34 @@ def p_flashcards():
         'cartões corretos se afastam no tempo, errados retornam mais cedo.</p>',
         unsafe_allow_html=True)
 
+    with st.expander("Como a avaliação funciona"):
+        st.markdown(
+            "Os flashcards não são corrigidos como certo ou errado. Depois "
+            "de revelar a resposta, você se autoavalia em uma escala de 1 "
+            "a 5, indicando o quão fácil foi lembrar daquela informação.")
+        ec1, ec2 = st.columns(2)
+        with ec1:
+            st.markdown("""
+**Notas e efeito no intervalo**
+
+- 1–2 — difícil: o intervalo até a próxima revisão diminui
+- 3 — regular: o intervalo permanece igual
+- 4–5 — fácil: o intervalo aumenta, espaçando a próxima revisão
+""")
+        with ec2:
+            st.markdown("""
+**O que significa "Consolidados"**
+
+Ao final da sessão, "Consolidados" conta apenas os
+cartões avaliados com nota 4 ou 5. Não é uma medida
+de acerto em prova, e sim um indicador de quão fixada
+está aquela informação na memória.
+""")
+        st.caption(
+            "Notas baixas não são um erro: sinalizam apenas que o conteúdo "
+            "precisa de mais repetições, o que é esperado e faz parte do "
+            "método.")
+
     pendentes = [(fid, fc) for fid, fc in fcs.items()
                  if (fc.get("proxima_revisao") or _hoje()) <= _hoje()]
 
@@ -1131,7 +1159,7 @@ def p_flashcards():
         pct   = corr / total * 100 if total else 0
         st.markdown(
             f'<p class="section-label">Sessão concluída</p>'
-            f'<p style="color:var(--text-dim);">Acertos: {corr} de {total} '
+            f'<p style="color:var(--text-dim);">Consolidados: {corr} de {total} '
             f'({pct:.0f}%)</p>', unsafe_allow_html=True)
         if st.button("Fechar"):
             st.session_state["fila_revisao"] = []
