@@ -1486,8 +1486,8 @@ vazios.
     st.markdown('<p class="section-label">Revisões pendentes</p>',
                 unsafe_allow_html=True)
     pendentes = []
-    for mid, m in d["matérias"].items():
-        for tid, tp in m.get("tópicos",{}).items():
+    for mid, m in d["materias"].items():
+        for tid, tp in m.get("topicos",{}).items():
             prox = tp.get("proxima_revisao")
             if prox and _dias_ate(prox) <= 0:
                 pendentes.append((m["nome"], tp["nome"], tid, tp.get("aula_ref","")))
@@ -1515,7 +1515,7 @@ vazios.
 
     with st.expander("Registrar tempo manualmente"):
         with st.form("form_sessao_manual", clear_on_submit=True):
-            mats = d["matérias"]
+            mats = d["materias"]
             opts = {m["nome"]: mid for mid, m in mats.items()}
             cc1,cc2,cc3 = st.columns([3,1,3])
             with cc1: mat_sel = st.selectbox("Matéria", ["Geral"]+list(opts.keys()))
@@ -1546,10 +1546,10 @@ def _render_tarefa_card(d: dict, tid: str, mat_nome: str, top_nome: str,
     vistos.add(chave_unica)
 
     mid_alvo, tp_alvo = None, None
-    for mid, m in d["matérias"].items():
-        if tid in m.get("tópicos", {}):
+    for mid, m in d["materias"].items():
+        if tid in m.get("topicos", {}):
             mid_alvo = mid
-            tp_alvo  = m["tópicos"][tid]
+            tp_alvo  = m["topicos"][tid]
             break
     if tp_alvo is None:
         st.caption(f"Tópico '{top_nome}' não encontrado.")
@@ -1601,10 +1601,10 @@ def _dialog_tarefa(d: dict):
     aula_ref  = ctx["aula_ref"]
     key_base  = ctx["key_base"]
 
-    if mid_alvo not in d["matérias"] or tid not in d["matérias"][mid_alvo].get("tópicos", {}):
+    if mid_alvo not in d["materias"] or tid not in d["materias"][mid_alvo].get("topicos", {}):
         st.error("Este tópico não existe mais.")
         return
-    tp_alvo = d["matérias"][mid_alvo]["tópicos"][tid]
+    tp_alvo = d["materias"][mid_alvo]["topicos"][tid]
 
     status_atual = tp_alvo.get("status", "Não estudado")
     reg          = tp_alvo.setdefault("questoes_registro", [])
@@ -1766,8 +1766,8 @@ def _coletar_registros_questoes(d: dict) -> list:
         topico_id, topico_nome, dificuldade, prioridade, aula_ref
     """
     registros = []
-    for mid, m in d.get("matérias", {}).items():
-        for tid, tp in m.get("tópicos", {}).items():
+    for mid, m in d.get("materias", {}).items():
+        for tid, tp in m.get("topicos", {}).items():
             for r in tp.get("questoes_registro", []):
                 registros.append({
                     "data":        r.get("data", ""),
@@ -2019,8 +2019,8 @@ def p_analise():
                           "semanal."):
             ajustados = 0
             nomes_top5 = {top_nome for _, top_nome, *_ in top5}
-            for mid, m in d["matérias"].items():
-                for tid, tp in m.get("tópicos", {}).items():
+            for mid, m in d["materias"].items():
+                for tid, tp in m.get("topicos", {}).items():
                     if tp["nome"] in nomes_top5:
                         tp["prioridade"] = 5
                         if tp.get("status") != "Dominado":
