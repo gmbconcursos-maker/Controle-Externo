@@ -1673,7 +1673,7 @@ def _dialog_tarefa(d: dict):
     if timer_key not in st.session_state:
         st.session_state[timer_key] = False
 
-    tc1, tc2, tc3 = st.columns(3)
+    tc1, tc2 = st.columns(2)
     with tc1:
         if not st.session_state[timer_key]:
             if st.button("Iniciar", key=f"btn_ini_{key_base}", use_container_width=True):
@@ -1681,7 +1681,7 @@ def _dialog_tarefa(d: dict):
                 st.session_state[inicio_key] = time.time()
                 st.rerun()
         else:
-            if st.button("Parar e salvar", key=f"btn_parar_{key_base}",
+            if st.button("Concluído", key=f"btn_parar_{key_base}",
                          use_container_width=True, type="primary"):
                 decorrido = int(time.time() - st.session_state.get(inicio_key, time.time()))
                 minutos = max(1, decorrido // 60)
@@ -1696,20 +1696,51 @@ def _dialog_tarefa(d: dict):
                 st.success(f"{minutos} min registrados.")
                 st.rerun()
     with tc2:
-        if st.session_state[timer_key]:
-            decorrido = int(time.time() - st.session_state.get(inicio_key, time.time()))
-            st.metric("Tempo decorrido", f"{decorrido//60:02d}:{decorrido%60:02d}")
-        else:
+        if not st.session_state[timer_key]:
             st.caption(f"Ciclo sugerido: {ms} min")
-    with tc3:
-        if st.session_state[timer_key]:
-            if st.button("Atualizar", key=f"btn_refresh_{key_base}",
-                         use_container_width=True):
-                st.rerun()
 
     if st.session_state[timer_key]:
-        st.caption("Timer em andamento. Clique em 'Atualizar' para "
-                  "acompanhar, ou 'Parar e salvar' ao concluir.")
+        # Relógio em tempo real via HTML/JavaScript: o navegador atualiza o
+        # número a cada segundo sem precisar de reexecução do script Python.
+        # O ponto de partida (em milissegundos desde a época Unix) vem do
+        # Python — assim, mesmo que o modal seja fechado e reaberto, o
+        # cálculo "agora menos início" permanece correto, pois o início
+        # nunca é perdido enquanto a sessão do navegador estiver ativa.
+        inicio_ms = int(st.session_state.get(inicio_key, time.time()) * 1000)
+        components_html = f"""
+        <div style="background:var(--surface);border:1px solid var(--border);
+                    border-radius:8px;padding:18px 20px;text-align:center;
+                    font-family:'Source Serif 4',serif;">
+            <div id="cronometro_{key_base}"
+                 style="font-size:34px;font-weight:600;color:var(--text);
+                        letter-spacing:0.02em;">00:00:00</div>
+            <div style="color:var(--text-faint);font-size:11px;
+                        text-transform:uppercase;letter-spacing:0.05em;
+                        margin-top:4px;">tempo decorrido</div>
+        </div>
+        <script>
+        (function() {{
+            var inicio = {inicio_ms};
+            var el = document.getElementById("cronometro_{key_base}");
+            function atualizar() {{
+                if (!el) return;
+                var agora = Date.now();
+                var decorridoSeg = Math.floor((agora - inicio) / 1000);
+                if (decorridoSeg < 0) decorridoSeg = 0;
+                var h = Math.floor(decorridoSeg / 3600);
+                var m = Math.floor((decorridoSeg % 3600) / 60);
+                var s = decorridoSeg % 60;
+                function pad(n) {{ return (n < 10 ? "0" : "") + n; }}
+                el.textContent = pad(h) + ":" + pad(m) + ":" + pad(s);
+            }}
+            atualizar();
+            setInterval(atualizar, 1000);
+        }})();
+        </script>
+        """
+        st.components.v1.html(components_html, height=90)
+        st.caption("Cronômetro em andamento. Clique em 'Concluído' ao "
+                  "terminar — o tempo é registrado automaticamente.")
 
     st.markdown("---")
 
